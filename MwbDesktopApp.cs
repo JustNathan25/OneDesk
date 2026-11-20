@@ -213,7 +213,10 @@ public class MwbDesktopAppForm : Form {
     private string baseDir;
 
     public MwbDesktopAppForm() {
-        baseDir = AppDomain.CurrentDomain.BaseDirectory;
+        baseDir = Directory.GetCurrentDirectory();
+        if (!File.Exists(Path.Combine(baseDir, "MwbDesktopApp.cs"))) {
+            baseDir = AppDomain.CurrentDomain.BaseDirectory;
+        }
         this.Text = "OneDesk";
         this.Size = new Size(560, 620);
         this.MinimumSize = new Size(560, 620);
@@ -894,14 +897,14 @@ public class MwbDesktopAppForm : Form {
     }
 
     private void TriggerGitHubAutoUpdate() {
-        string updaterBat = Path.Combine(baseDir, "update-from-github.bat");
-        if (!File.Exists(updaterBat)) return;
+        string updaterPs1 = Path.Combine(baseDir, "Update-OneDesk.ps1");
+        if (!File.Exists(updaterPs1)) return;
 
         SetFooter("Pulling latest commit from GitHub & restarting...");
         try {
             ProcessStartInfo psi = new ProcessStartInfo {
-                FileName = "cmd.exe",
-                Arguments = "/c start \"OneDesk Updater\" \"" + updaterBat + "\"",
+                FileName = "powershell.exe",
+                Arguments = "-NoProfile -ExecutionPolicy Bypass -File \"" + updaterPs1 + "\"",
                 WorkingDirectory = baseDir,
                 UseShellExecute = false,
                 CreateNoWindow = true

@@ -173,25 +173,19 @@ class WindowsMwbDriver {
       return;
     }
 
-    const exePath = path.join(__dirname, 'MwbInputDriver.exe');
-    if (fs.existsSync(exePath)) {
-      this.proc = spawn(exePath, [], {
-        stdio: ['pipe', 'pipe', 'pipe'],
-        windowsHide: true
-      });
-    } else {
-      this.proc = spawn('powershell.exe', ['-NoProfile', '-NoLogo', '-Command', '-'], {
-        stdio: ['pipe', 'pipe', 'pipe'],
-        windowsHide: true
-      });
-      const csPath = path.join(__dirname, 'MwbInputDriver.cs').replace(/\\/g, '\\\\');
-      const bootstrapPs = `
+    // Always run MwbInputDriver.cs in-memory inside Microsoft's signed powershell.exe host
+    // so Windows 11 Smart App Control (SAC) never blocks an unsigned .exe binary on disk.
+    this.proc = spawn('powershell.exe', ['-NoProfile', '-NoLogo', '-ExecutionPolicy', 'Bypass', '-Command', '-'], {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      windowsHide: true
+    });
+    const csPath = path.join(__dirname, 'MwbInputDriver.cs').replace(/\\/g, '\\\\');
+    const bootstrapPs = `
 $csCode = [System.IO.File]::ReadAllText("${csPath}")
 Add-Type -TypeDefinition $csCode -ReferencedAssemblies System.Windows.Forms, System.Drawing -Language CSharp
 [Program]::Main()
 `;
-      this.proc.stdin.write(bootstrapPs + '\n');
-    }
+    this.proc.stdin.write(bootstrapPs + '\n');
 
     let stdoutRemainder = '';
     this.proc.stdout.on('data', (data) => {
@@ -1216,11 +1210,11 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (parsedUrl.pathname === '/github-update') {
-    const updaterBat = path.join(__dirname, '..', 'update-from-github.bat');
+    const updaterPs1 = path.join(__dirname, '..', 'Update-OneDesk.ps1');
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ ok: true, message: 'Launching GitHub Auto-Updater...' }));
     setTimeout(() => {
-      spawn('cmd.exe', ['/c', 'start', '"OneDesk GitHub Auto-Updater"', updaterBat], {
+      spawn('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', updaterPs1], {
         cwd: path.join(__dirname, '..'),
         detached: true,
         stdio: 'ignore'

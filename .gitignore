@@ -1,4 +1,5 @@
 host-server/node_modules/
 host-server/host-config.json
+*.exe
 *.log
 .DS_Store
