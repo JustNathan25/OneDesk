@@ -1172,11 +1172,13 @@ public class MwbDesktopAppForm : Form {
                     monitorCanvas.ActiveScreen = activeScreen;
                     monitorCanvas.Invalidate();
                 }
-                } catch (Exception ex) {
-                    lblStatusDot.ForeColor = Color.FromArgb(239, 68, 68);
-                    lblStatusText.Text = "SERVICE STARTING / INSTALLING PACKAGES...";
-                    EnsureBackendServiceRunning();
-                }
+            }
+        } catch {
+            lblStatusDot.ForeColor = Color.FromArgb(239, 68, 68);
+            lblStatusText.Text = "SERVICE STARTING / INSTALLING PACKAGES...";
+            EnsureBackendServiceRunning();
+        }
+    }
 
     private void RegenerateSessionLink() {
         try {
