@@ -291,8 +291,8 @@ public class Program {
         }
     }
 
-    private static volatile int pendingMoveDx = 0;
-    private static volatile int pendingMoveDy = 0;
+    private static int pendingMoveDx = 0;
+    private static int pendingMoveDy = 0;
 
     private static IntPtr MouseHookCallback(int nCode, IntPtr wParam, IntPtr lParam) {
         if (nCode >= 0 && captureEnabled) {
