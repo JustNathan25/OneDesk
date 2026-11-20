@@ -291,6 +291,9 @@ public class Program {
         }
     }
 
+    private static volatile int pendingMoveDx = 0;
+    private static volatile int pendingMoveDy = 0;
+
     private static IntPtr MouseHookCallback(int nCode, IntPtr wParam, IntPtr lParam) {
         if (nCode >= 0 && captureEnabled) {
             int msg = wParam.ToInt32();
@@ -325,10 +328,10 @@ public class Program {
                     int dx = hookStruct.pt.X - anchorX;
                     int dy = hookStruct.pt.Y - anchorY;
                     if (dx != 0 || dy != 0) {
-                        EmitLine("HOOK_MOVE:" + dx + ":" + dy);
+                        Interlocked.Add(ref pendingMoveDx, dx);
+                        Interlocked.Add(ref pendingMoveDy, dy);
                     }
-                    // Keep cursor pinned at anchor point and swallow OS mouse move
-                    SetCursorPos(anchorX, anchorY);
+                    // Returning 1 swallows the OS cursor move so the cursor stays pinned at (anchorX, anchorY) without calling SetCursorPos!
                     return new IntPtr(1);
                 } else if (msg == WM_LBUTTONDOWN) {
                     EmitLine("HOOK_BTN:0:1");
@@ -425,6 +428,21 @@ public class Program {
         EmitLine("HOOK_STATUS:" + (hooksOk ? "OK" : "FAILED"));
         EmitLine("DRIVER_READY");
 
+        // High-frequency lock-free mouse delta flusher thread (eliminates Console.WriteLine blocking inside the Win32 WH_MOUSE_LL callback!)
+        Thread moveFlusherThread = new Thread(() => {
+            while (true) {
+                Thread.Sleep(6);
+                if (!remoteCaptureActive) continue;
+                int dx = Interlocked.Exchange(ref pendingMoveDx, 0);
+                int dy = Interlocked.Exchange(ref pendingMoveDy, 0);
+                if (dx != 0 || dy != 0) {
+                    EmitLine("HOOK_MOVE:" + dx + ":" + dy);
+                }
+            }
+        });
+        moveFlusherThread.IsBackground = true;
+        moveFlusherThread.Start();
+
         // Periodic clipboard monitor on UI STA thread
         System.Windows.Forms.Timer clipTimer = new System.Windows.Forms.Timer();
         clipTimer.Interval = 900;
@@ -443,18 +461,10 @@ public class Program {
         clipTimer.Start();
 
         // Background command reader thread:
-        // M x y                -> Move OS cursor & visible overlay (Receiver)
-        // H                    -> Hide visible overlay (Receiver)
-        // B flag btn isDown    -> Mouse button event with stuck-button tracking (Receiver)
-        // W flag amt           -> Mouse wheel scroll (Receiver)
-        // K vk flag            -> Keyboard event with stuck-key tracking (Receiver)
-        // R                    -> Release all pressed keys/buttons & unclip cursor (Fail-Safe Reset)
-        // C 0|1 edge           -> Enable/disable OS global edge & hook capture (Controller)
-        // E edge normX normY   -> Explicitly enter remote capture mode (Controller)
-        // U normX normY        -> Exit remote capture mode and unclip local cursor (Controller)
-        // S base64             -> Set OS clipboard text from peer
+        // Coalesces queued M (Mouse Move) commands in the stdin pipe so the cursor always jumps immediately to the latest coordinate with zero queue lag!
         Thread readerThread = new Thread(() => {
             string line;
+            long lastOverlayTick = 0;
             while ((line = Console.ReadLine()) != null) {
                 if (line.Length == 0) continue;
                 char cmd = line[0];
@@ -464,7 +474,10 @@ public class Program {
                         int x = int.Parse(parts[1]);
                         int y = int.Parse(parts[2]);
                         SetCursorPos(x, y);
-                        if (overlay != null && overlay.IsHandleCreated) {
+                        long nowTicks = DateTime.UtcNow.Ticks;
+                        // Throttle WinForms overlay window movement to 60Hz (16ms) so BeginInvoke never floods the Windows UI message queue
+                        if (nowTicks - lastOverlayTick >= 160000 && overlay != null && overlay.IsHandleCreated) {
+                            lastOverlayTick = nowTicks;
                             overlay.BeginInvoke((MethodInvoker)delegate {
                                 overlay.MoveOverlay(x, y);
                             });

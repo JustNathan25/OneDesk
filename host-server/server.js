@@ -67,10 +67,19 @@ function normalizePin(pin) {
   return String(pin || '').trim();
 }
 
+// Cache derived PBKDF2 AES-256-GCM keys in memory so we NEVER run 10,000 PBKDF2 iterations on high-frequency mouse packets!
+const derivedKeyCache = new Map();
+
 function deriveSessionKey(roomId, pin) {
   const normRoom = normalizeRoomId(roomId);
   const normPin = normalizePin(pin) || '000000';
-  return crypto.pbkdf2Sync(normPin, `mwb-v2-salt:${normRoom}`, 10000, 32, 'sha256');
+  const cacheKey = `${normRoom}:${normPin}`;
+  let cached = derivedKeyCache.get(cacheKey);
+  if (!cached) {
+    cached = crypto.pbkdf2Sync(normPin, `mwb-v2-salt:${normRoom}`, 10000, 32, 'sha256');
+    derivedKeyCache.set(cacheKey, cached);
+  }
+  return cached;
 }
 
 function encryptEnvelope(payloadObj, roomId, pin) {
@@ -274,9 +283,9 @@ Add-Type -TypeDefinition $csCode -ReferencedAssemblies System.Windows.Forms, Sys
           this.accDx -= sendX;
           this.accDy -= sendY;
           if ((sendX !== 0 || sendY !== 0) && this.callbacks.onControllerInput) {
-            this.callbacks.onControllerInput({ t: 'm', x: sendX, y: sendY, clientId: myControllerId });
+            this.callbacks.onControllerInput({ t: 'm', x: sendX, y: sendY });
           }
-        }, 7);
+        }, 12);
       }
     } else if (msg.startsWith('HOOK_BTN:')) {
       const parts = msg.split(':');
@@ -525,7 +534,8 @@ function broadcastToClients(obj, skipCloud = false) {
 
 function sendFromNativeController(payloadObj, allowPreAuth = false) {
   if (!controllerConnected && !allowPreAuth) return false;
-  if (payloadObj && typeof payloadObj === 'object' && !payloadObj.clientId) {
+  // Omit redundant clientId on high-frequency mouse delta packets ('m') to keep encrypted packet minimal
+  if (payloadObj && typeof payloadObj === 'object' && !payloadObj.clientId && payloadObj.t !== 'm') {
     payloadObj.clientId = myControllerId;
   }
   if (controllerTransport === 'cloud' && controllerMqtt && controllerMqtt.connected && controllerRoomId) {
@@ -648,10 +658,14 @@ function connectNativeController(opts = {}) {
 
     controllerMqtt = mqtt.connect(CLOUD_BROKER_URL, {
       reconnectPeriod: 2000,
-      connectTimeout: 8000
+      connectTimeout: 8000,
+      wsOptions: { perMessageDeflate: false }
     });
 
     controllerMqtt.on('connect', () => {
+      if (controllerMqtt.stream && controllerMqtt.stream.socket && controllerMqtt.stream.socket._socket && controllerMqtt.stream.socket._socket.setNoDelay) {
+        controllerMqtt.stream.socket._socket.setNoDelay(true);
+      }
       controllerMqtt.subscribe(toClientTopic, { qos: 0 }, () => {
         const sendHello = () => {
           if (controllerStatus === 'connected' || controllerStatus === 'rejected') {
@@ -704,12 +718,15 @@ function connectNativeController(opts = {}) {
   controllerStatusDetail = `Connecting to LAN ${ip}:${port}...`;
 
   try {
-    controllerWs = new WebSocket(controllerLanUrl);
+    controllerWs = new WebSocket(controllerLanUrl, { perMessageDeflate: false });
   } catch (err) {
     return;
   }
 
   controllerWs.on('open', () => {
+    if (controllerWs._socket && controllerWs._socket.setNoDelay) {
+      controllerWs._socket.setNoDelay(true);
+    }
     sendFromNativeController({
       type: 'hello',
       clientId: myControllerId,
@@ -1086,19 +1103,17 @@ function handleIncomingMessage(msg, replyFn, sourceLabel, authContext) {
     const dy = msg.y ?? msg.dy ?? 0;
     const pos = driver.moveRelative(dx, dy);
     if (pos) {
+      // Only echo cursor coordinates to local Receiver views (skipCloud = true) to prevent two-way internet relay congestion!
       const now = Date.now();
-      if (now - lastCursorEchoTs > 50) {
+      if (now - lastCursorEchoTs > 120) {
         lastCursorEchoTs = now;
-        broadcastToClients(
-          {
-            type: 'host_cursor',
-            x: pos.x,
-            y: pos.y,
-            normX: Number(pos.normX.toFixed(3)),
-            normY: Number(pos.normY.toFixed(3))
-          },
-          false
-        );
+        broadcastToLocalViews({
+          type: 'host_cursor',
+          x: pos.x,
+          y: pos.y,
+          normX: Number(pos.normX.toFixed(3)),
+          normY: Number(pos.normY.toFixed(3))
+        });
       }
     }
     return;
@@ -1203,11 +1218,15 @@ function startCloudInternetRelay(forceNew = false) {
 
   cloudClient = mqtt.connect(CLOUD_BROKER_URL, {
     reconnectPeriod: 2000,
-    connectTimeout: 8000
+    connectTimeout: 8000,
+    wsOptions: { perMessageDeflate: false }
   });
 
   cloudClient.on('connect', () => {
     cloudReady = true;
+    if (cloudClient.stream && cloudClient.stream.socket && cloudClient.stream.socket._socket && cloudClient.stream.socket._socket.setNoDelay) {
+      cloudClient.stream.socket._socket.setNoDelay(true);
+    }
     cloudClient.subscribe(inTopic, { qos: 0 }, (err) => {
       if (!err) {
         console.log('====================================================');
