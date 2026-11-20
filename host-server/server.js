@@ -751,8 +751,31 @@ function connectNativeController(opts = {}) {
   controllerWs.on('error', () => {});
 }
 
+function getInverseEdge(edge) {
+  switch (edge) {
+    case 'right': return 'left';
+    case 'left': return 'right';
+    case 'top': return 'bottom';
+    case 'bottom': return 'top';
+    default: return 'left';
+  }
+}
+
 function handleIncomingMessageFromReceiver(msg) {
   if (!msg || typeof msg !== 'object') return;
+
+  if (msg.type === 'set_layout') {
+    if (['right', 'left', 'top', 'bottom'].includes(msg.hostPosition)) {
+      driver.hostPosition = msg.hostPosition;
+      saveHostConfig({ hostPosition: msg.hostPosition });
+      if (controllerCaptureArmed && controllerConnected) {
+        driver.setOsCapture(true, msg.hostPosition);
+      }
+      broadcastToLocalViews(msg);
+      broadcastHostStatus();
+    }
+    return;
+  }
 
   if (msg.type === 'auth_pending') {
     controllerStatus = 'waiting_approval';
@@ -1368,6 +1391,44 @@ const server = http.createServer(async (req, res) => {
 
   if (parsedUrl.pathname === '/native-disconnect') {
     disconnectNativeController(true);
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(getHostInfoPayload()));
+    return;
+  }
+
+  if (parsedUrl.pathname === '/native-set-edge') {
+    const edge = (parsedUrl.searchParams.get('edge') || 'right').toLowerCase();
+    const role = (parsedUrl.searchParams.get('role') || 'controller').toLowerCase();
+    if (['left', 'right', 'top', 'bottom'].includes(edge)) {
+      // If user clicked the arrangement on the RECEIVER PC (e.g., placed Remote Controller on Receiver's LEFT),
+      // that means the Receiver sits on the Controller's RIGHT (inverse edge).
+      const canonicalHostPos = role === 'receiver' ? getInverseEdge(edge) : edge;
+      driver.hostPosition = canonicalHostPos;
+      saveHostConfig({ hostPosition: canonicalHostPos });
+
+      if (controllerConnected) {
+        if (controllerCaptureArmed) {
+          driver.setOsCapture(true, canonicalHostPos);
+        }
+        sendFromNativeController({ type: 'set_layout', hostPosition: canonicalHostPos });
+      } else {
+        // We are the Receiver: notify any connected Controller to update its OS hook edge immediately!
+        broadcastToClients({ type: 'set_layout', hostPosition: canonicalHostPos });
+      }
+      broadcastHostStatus();
+    }
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(getHostInfoPayload()));
+    return;
+  }
+
+  if (parsedUrl.pathname === '/native-set-options') {
+    const osCapture = parsedUrl.searchParams.get('osCapture') !== '0';
+    const clipboard = parsedUrl.searchParams.get('clipboard') !== '0';
+    controllerCaptureArmed = osCapture;
+    saveHostConfig({ clipboardSync: clipboard });
+    driver.setOsCapture(controllerCaptureArmed && controllerConnected, driver.hostPosition);
+    broadcastHostStatus();
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(getHostInfoPayload()));
     return;

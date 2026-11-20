@@ -308,16 +308,16 @@ public class Program {
                         int x = hookStruct.pt.X;
                         int y = hookStruct.pt.Y;
                         string edge = activeEdge;
-                        if (edge == "right" && x >= screenW - 2) {
+                        if (edge == "right" && x >= screenW - 4) {
                             EnterRemoteCapture(x, y, "right");
                             return new IntPtr(1);
-                        } else if (edge == "left" && x <= 1) {
+                        } else if (edge == "left" && x <= 3) {
                             EnterRemoteCapture(x, y, "left");
                             return new IntPtr(1);
-                        } else if (edge == "top" && y <= 1) {
+                        } else if (edge == "top" && y <= 3) {
                             EnterRemoteCapture(x, y, "top");
                             return new IntPtr(1);
-                        } else if (edge == "bottom" && y >= screenH - 2) {
+                        } else if (edge == "bottom" && y >= screenH - 4) {
                             EnterRemoteCapture(x, y, "bottom");
                             return new IntPtr(1);
                         }

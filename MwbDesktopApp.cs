@@ -592,6 +592,7 @@ public class MwbDesktopAppForm : Form {
             ForeColor = TextPrimary,
             Font = new Font("Segoe UI", 8.5f)
         };
+        chkOsHooks.CheckedChanged += (s, e) => PushLiveOptionsToBackend();
 
         chkClipboard = new CheckBox {
             Text = "Shared Clipboard",
@@ -601,6 +602,7 @@ public class MwbDesktopAppForm : Form {
             ForeColor = TextPrimary,
             Font = new Font("Segoe UI", 8.5f)
         };
+        chkClipboard.CheckedChanged += (s, e) => PushLiveOptionsToBackend();
 
         Label lblEscHint = new Label {
             Text = "ESC / Ctrl+Alt+Q returns cursor",
@@ -668,6 +670,27 @@ public class MwbDesktopAppForm : Form {
         btnModeLan.FlatAppearance.BorderColor = !isCloud ? AccentAmber : BorderSubtle;
     }
 
+    private string GetInverseEdge(string edge) {
+        if (edge == "right") return "left";
+        if (edge == "left") return "right";
+        if (edge == "top") return "bottom";
+        if (edge == "bottom") return "top";
+        return "right";
+    }
+
+    private void PushLiveOptionsToBackend() {
+        try {
+            string url = string.Format(
+                "http://127.0.0.1:8765/native-set-options?osCapture={0}&clipboard={1}",
+                chkOsHooks.Checked ? "1" : "0",
+                chkClipboard.Checked ? "1" : "0"
+            );
+            using (var wc = new System.Net.WebClient()) {
+                wc.DownloadString(url);
+            }
+        } catch {}
+    }
+
     private void SetEdgeSelection(string edge, bool notifyBackend) {
         currentEdge = edge;
         monitorCanvas.EdgePosition = edge;
@@ -680,7 +703,17 @@ public class MwbDesktopAppForm : Form {
         }
 
         if (notifyBackend) {
-            SetFooter("Active screen seam set to " + edge.ToUpper() + " edge.");
+            try {
+                string url = string.Format(
+                    "http://127.0.0.1:8765/native-set-edge?edge={0}&role={1}",
+                    Uri.EscapeDataString(edge),
+                    Uri.EscapeDataString(currentRole)
+                );
+                using (var wc = new System.Net.WebClient()) {
+                    wc.DownloadString(url);
+                }
+            } catch {}
+            SetFooter("Active screen seam updated to " + edge.ToUpper() + " edge.");
         }
     }
 
@@ -889,6 +922,7 @@ public class MwbDesktopAppForm : Form {
                 string pin = ExtractJsonString(json, "pairingPin");
                 string lanUrl = ExtractJsonString(json, "lanWsUrl");
                 string activeScreen = ExtractJsonString(json, "activeScreen");
+                string hostPos = ExtractJsonString(json, "hostPosition");
                 string peerHost = ExtractJsonString(json, "controllerPeerHostname");
                 string ctrlStatus = ExtractJsonString(json, "controllerStatus");
                 string ctrlDetail = ExtractJsonString(json, "controllerStatusDetail");
@@ -965,6 +999,13 @@ public class MwbDesktopAppForm : Form {
                     } else {
                         lblStatusDot.ForeColor = hooksOk ? AccentEmerald : AccentAmber;
                         lblStatusText.Text = hooksOk ? "RECEIVER READY" : "STARTING DRIVER";
+                    }
+                }
+
+                if (!string.IsNullOrEmpty(hostPos)) {
+                    string displayEdge = currentRole == "receiver" ? GetInverseEdge(hostPos) : hostPos;
+                    if (displayEdge != currentEdge) {
+                        SetEdgeSelection(displayEdge, false);
                     }
                 }
 
