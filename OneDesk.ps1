@@ -19,8 +19,8 @@ if (-not (Get-Command node -ErrorAction SilentlyContinue) -and -not (Test-Path "
     $env:PATH = "C:\Program Files\nodejs;" + $env:PATH
 }
 
-# Ensure Node dependencies are installed if missing
-if ((Test-Path "$BaseDir\host-server\package.json") -and -not (Test-Path "$BaseDir\host-server\node_modules")) {
+# Ensure Node dependencies are installed if missing (specifically check for node_modules\ws)
+if ((Test-Path "$BaseDir\host-server\package.json") -and -not (Test-Path "$BaseDir\host-server\node_modules\ws")) {
     Set-Location "$BaseDir\host-server"
     cmd.exe /c "npm install --no-audit --no-fund" | Out-Null
     Set-Location $BaseDir

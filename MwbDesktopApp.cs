@@ -308,7 +308,7 @@ public class MwbDesktopAppForm : Form {
         };
 
         lblStatusText = new Label {
-            Text = "OS HOOKS READY",
+            Text = "STARTING SERVICE...",
             Font = new Font("Consolas", 8f, FontStyle.Regular),
             ForeColor = TextMuted,
             AutoSize = true,
@@ -889,6 +889,27 @@ public class MwbDesktopAppForm : Form {
             return;
         }
 
+        if (serverProcess != null && !serverProcess.HasExited) {
+            return;
+        }
+
+        string hostServerDir = Path.GetDirectoryName(serverScript);
+        string nodeModulesWs = Path.Combine(hostServerDir, "node_modules", "ws");
+        if (!Directory.Exists(nodeModulesWs)) {
+            SetFooter("Installing required Node packages (ws, mqtt) in host-server...");
+            try {
+                string npmCmd = File.Exists(@"C:\Program Files\nodejs\npm.cmd") ? @"C:\Program Files\nodejs\npm.cmd" : "npm";
+                Process pNpm = Process.Start(new ProcessStartInfo {
+                    FileName = "cmd.exe",
+                    Arguments = "/c \"" + npmCmd + "\" install --no-audit --no-fund",
+                    WorkingDirectory = hostServerDir,
+                    UseShellExecute = false,
+                    CreateNoWindow = true
+                });
+                pNpm.WaitForExit(35000);
+            } catch {}
+        }
+
         try {
             string nodeExe = ResolveNodeExecutablePath();
             ProcessStartInfo psi;
@@ -1151,9 +1172,11 @@ public class MwbDesktopAppForm : Form {
                     monitorCanvas.ActiveScreen = activeScreen;
                     monitorCanvas.Invalidate();
                 }
-            }
-        } catch {}
-    }
+                } catch (Exception ex) {
+                    lblStatusDot.ForeColor = Color.FromArgb(239, 68, 68);
+                    lblStatusText.Text = "SERVICE STARTING / INSTALLING PACKAGES...";
+                    EnsureBackendServiceRunning();
+                }
 
     private void RegenerateSessionLink() {
         try {
@@ -1207,10 +1230,33 @@ public class MwbDesktopAppForm : Form {
         } catch {}
     }
 
+    private string ResolveGitExecutablePath() {
+        string[] candidates = new string[] {
+            @"C:\Program Files\Git\cmd\git.exe",
+            @"C:\Program Files\Git\bin\git.exe",
+            @"C:\Program Files (x86)\Git\cmd\git.exe",
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Programs", "Git", "cmd", "git.exe")
+        };
+        foreach (string c in candidates) {
+            if (File.Exists(c)) return c;
+        }
+        try {
+            string pathEnv = Environment.GetEnvironmentVariable("PATH") ?? "";
+            foreach (string dir in pathEnv.Split(';')) {
+                if (string.IsNullOrEmpty(dir)) continue;
+                string p = Path.Combine(dir.Trim(), "git.exe");
+                if (File.Exists(p)) return p;
+            }
+        } catch {}
+        return null;
+    }
+
     private string RunGitCommand(string args) {
         try {
+            string gitExe = ResolveGitExecutablePath();
+            if (string.IsNullOrEmpty(gitExe)) return "";
             ProcessStartInfo psi = new ProcessStartInfo {
-                FileName = "git",
+                FileName = gitExe,
                 Arguments = args,
                 WorkingDirectory = baseDir,
                 UseShellExecute = false,
@@ -1231,25 +1277,54 @@ public class MwbDesktopAppForm : Form {
     private void CheckForGitHubUpdatesAsync() {
         System.Threading.ThreadPool.QueueUserWorkItem((state) => {
             try {
-                RunGitCommand("fetch origin main");
-                string localSha = RunGitCommand("rev-parse HEAD");
-                string remoteSha = RunGitCommand("rev-parse origin/main");
-                if (!string.IsNullOrEmpty(localSha) && !string.IsNullOrEmpty(remoteSha)) {
-                    bool hasNew = (localSha != remoteSha);
-                    this.BeginInvoke((MethodInvoker)delegate {
-                        if (hasNew) {
-                            string shortSha = remoteSha.Length >= 7 ? remoteSha.Substring(0, 7) : remoteSha;
-                            btnAutoUpdate.Text = "UPDATE · " + shortSha;
-                            btnAutoUpdate.ForeColor = AccentEmerald;
-                            btnAutoUpdate.FlatAppearance.BorderColor = AccentEmerald;
-                            SetFooter("New GitHub commit " + shortSha + " available — click UPDATE");
-                        } else {
-                            string shortSha = localSha.Length >= 7 ? localSha.Substring(0, 7) : localSha;
-                            btnAutoUpdate.Text = "SYNC · " + shortSha;
-                            btnAutoUpdate.ForeColor = TextMuted;
-                            btnAutoUpdate.FlatAppearance.BorderColor = BorderSubtle;
-                        }
-                    });
+                // FirstTry: Use local git if available and .git exists
+                if (Directory.Exists(Path.Combine(baseDir, ".git")) && !string.IsNullOrEmpty(ResolveGitExecutablePath())) {
+                    RunGitCommand("fetch origin main");
+                    string localSha = RunGitCommand("rev-parse HEAD");
+                    string remoteSha = RunGitCommand("rev-parse origin/main");
+                    if (!string.IsNullOrEmpty(localSha) && !string.IsNullOrEmpty(remoteSha)) {
+                        bool hasNew = (localSha != remoteSha);
+                        this.BeginInvoke((MethodInvoker)delegate {
+                            if (hasNew) {
+                                string shortSha = remoteSha.Length >= 7 ? remoteSha.Substring(0, 7) : remoteSha;
+                                btnAutoUpdate.Text = "UPDATE · " + shortSha;
+                                btnAutoUpdate.ForeColor = AccentEmerald;
+                                btnAutoUpdate.FlatAppearance.BorderColor = AccentEmerald;
+                                SetFooter("New GitHub commit " + shortSha + " available — click UPDATE");
+                            } else {
+                                string shortSha = localSha.Length >= 7 ? localSha.Substring(0, 7) : localSha;
+                                btnAutoUpdate.Text = "SYNC · " + shortSha;
+                                btnAutoUpdate.ForeColor = TextMuted;
+                                btnAutoUpdate.FlatAppearance.BorderColor = BorderSubtle;
+                            }
+                        });
+                        return;
+                    }
+                }
+
+                // Fallback for new devices without Git installed or downloaded via ZIP: query GitHub REST API directly!
+                System.Net.ServicePointManager.SecurityProtocol = (System.Net.SecurityProtocolType)3072; // TLS 1.2
+                using (var wc = new System.Net.WebClient()) {
+                    wc.Headers.Add("User-Agent", "OneDesk-Desktop-Updater");
+                    string json = wc.DownloadString("https://api.github.com/repos/JustNathan25/OneDesk/commits/main");
+                    string remoteSha = ExtractJsonString(json, "sha");
+                    if (!string.IsNullOrEmpty(remoteSha)) {
+                        string shortSha = remoteSha.Length >= 7 ? remoteSha.Substring(0, 7) : remoteSha;
+                        string versionFile = Path.Combine(baseDir, ".onedesk-commit");
+                        string localSha = File.Exists(versionFile) ? File.ReadAllText(versionFile).Trim() : "";
+                        bool hasNew = (!string.IsNullOrEmpty(localSha) && !remoteSha.StartsWith(localSha, StringComparison.OrdinalIgnoreCase));
+                        this.BeginInvoke((MethodInvoker)delegate {
+                            if (hasNew) {
+                                btnAutoUpdate.Text = "UPDATE · " + shortSha;
+                                btnAutoUpdate.ForeColor = AccentEmerald;
+                                btnAutoUpdate.FlatAppearance.BorderColor = AccentEmerald;
+                            } else {
+                                btnAutoUpdate.Text = "GIT SYNC · " + shortSha;
+                                btnAutoUpdate.ForeColor = AccentAmber;
+                                btnAutoUpdate.FlatAppearance.BorderColor = AccentAmber;
+                            }
+                        });
+                    }
                 }
             } catch {}
         });
@@ -1259,18 +1334,21 @@ public class MwbDesktopAppForm : Form {
         string updaterPs1 = Path.Combine(baseDir, "Update-OneDesk.ps1");
         if (!File.Exists(updaterPs1)) return;
 
-        SetFooter("Pulling latest commit from GitHub & restarting...");
+        SetFooter("Pulling latest version from GitHub & restarting...");
         try {
+            string psExe = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), @"WindowsPowerShell\v1.0\powershell.exe");
+            if (!File.Exists(psExe)) psExe = "powershell.exe";
             ProcessStartInfo psi = new ProcessStartInfo {
-                FileName = "powershell.exe",
+                FileName = psExe,
                 Arguments = "-NoProfile -ExecutionPolicy Bypass -File \"" + updaterPs1 + "\"",
                 WorkingDirectory = baseDir,
-                UseShellExecute = false,
-                CreateNoWindow = true
+                UseShellExecute = true
             };
             Process.Start(psi);
             CleanupAndExit();
-        } catch {}
+        } catch (Exception ex) {
+            SetFooter("Update error: " + ex.Message);
+        }
     }
 
     private void CleanupAndExit() {
