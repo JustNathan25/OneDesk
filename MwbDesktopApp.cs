@@ -185,6 +185,9 @@ public class MwbDesktopAppForm : Form {
 
     // Receiver Card
     private Panel receiverPanel;
+    private Button btnRecCloud;
+    private Button btnRecLan;
+    private Label lblSessionId;
     private TextBox txtSessionLink;
     private TextBox txtSessionPin;
     private Label lblLanHint;
@@ -195,6 +198,7 @@ public class MwbDesktopAppForm : Form {
     private Panel controllerPanel;
     private Button btnModeCloud;
     private Button btnModeLan;
+    private Label lblTargetEndpoint;
     private TextBox txtTargetLink;
     private TextBox txtTargetPin;
     private CheckBox chkOsHooks;
@@ -208,6 +212,8 @@ public class MwbDesktopAppForm : Form {
     private string currentRole = "receiver";
     private string currentTransportMode = "internet";
     private string currentEdge = "right";
+    private string cachedCloudUrl = "";
+    private string cachedLanUrl = "ws://127.0.0.1:8765";
     private string promptedPendingClientId = "";
     private bool approvalDialogOpen = false;
     private System.Windows.Forms.Timer pollTimer;
@@ -405,12 +411,35 @@ public class MwbDesktopAppForm : Form {
             Text = "SESSION CREDENTIALS",
             Font = new Font("Consolas", 8f, FontStyle.Bold),
             ForeColor = TextMuted,
-            Location = new Point(20, 18),
+            Location = new Point(20, 16),
             AutoSize = true
         };
 
-        Label lblSessionId = new Label {
-            Text = "Session Endpoint",
+        btnRecCloud = CreateFlatButton(
+            "INTERNET RELAY",
+            new Point(290, 12),
+            new Size(98, 22),
+            BgInput,
+            AccentAmber,
+            AccentAmber
+        );
+        btnRecCloud.Font = new Font("Consolas", 7.2f, FontStyle.Bold);
+
+        btnRecLan = CreateFlatButton(
+            "LOCAL LAN",
+            new Point(392, 12),
+            new Size(84, 22),
+            BgInput,
+            TextMuted,
+            BorderSubtle
+        );
+        btnRecLan.Font = new Font("Consolas", 7.2f, FontStyle.Bold);
+
+        btnRecCloud.Click += (s, e) => SetTransportMode("internet");
+        btnRecLan.Click += (s, e) => SetTransportMode("lan");
+
+        lblSessionId = new Label {
+            Text = "Internet Session Endpoint (or click LOCAL LAN above)",
             Font = new Font("Segoe UI", 8.5f),
             ForeColor = TextMuted,
             Location = new Point(20, 44),
@@ -447,9 +476,9 @@ public class MwbDesktopAppForm : Form {
         };
 
         btnCopySession = CreateFlatButton(
-            "COPY PAIRING KEY",
+            "COPY INTERNET KEY",
             new Point(20, 110),
-            new Size(318, 38),
+            new Size(206, 38),
             AccentAmber,
             Color.FromArgb(10, 10, 12),
             Color.Empty
@@ -458,14 +487,30 @@ public class MwbDesktopAppForm : Form {
             if (!string.IsNullOrEmpty(txtSessionLink.Text)) {
                 Clipboard.SetText(txtSessionLink.Text + " (PIN: " + txtSessionPin.Text + ")");
                 btnCopySession.Text = "COPIED TO CLIPBOARD";
-                SetFooter("Copied session endpoint & 6-digit pairing key.");
+                SetFooter("Copied " + txtSessionLink.Text + " & 6-digit pairing key.");
                 System.Windows.Forms.Timer t = new System.Windows.Forms.Timer { Interval = 1500 };
                 t.Tick += (ts, te) => {
-                    btnCopySession.Text = "COPY PAIRING KEY";
+                    btnCopySession.Text = currentTransportMode == "lan" ? "COPY LAN IP + KEY" : "COPY INTERNET KEY";
                     t.Stop();
                     t.Dispose();
                 };
                 t.Start();
+            }
+        };
+
+        Button btnCopyLanDirect = CreateFlatButton(
+            "COPY LAN IP",
+            new Point(234, 110),
+            new Size(104, 38),
+            BgInput,
+            AccentEmerald,
+            AccentEmerald
+        );
+        btnCopyLanDirect.Click += (s, e) => {
+            SetTransportMode("lan");
+            if (!string.IsNullOrEmpty(cachedLanUrl)) {
+                Clipboard.SetText(cachedLanUrl + " (PIN: " + txtSessionPin.Text + ")");
+                SetFooter("Switched to LOCAL LAN & copied " + cachedLanUrl + " + PIN!");
             }
         };
 
@@ -480,16 +525,18 @@ public class MwbDesktopAppForm : Form {
         btnNewSession.Click += (s, e) => RegenerateSessionLink();
 
         lblLanHint = new Label {
-            Text = "LAN DIRECT  ·  ws://127.0.0.1:8765",
+            Text = "LAN DIRECT (SAME WI-FI)  ·  ws://127.0.0.1:8765",
             Font = new Font("Consolas", 8f),
-            ForeColor = TextMuted,
+            ForeColor = AccentEmerald,
             Location = new Point(20, 166),
-            AutoSize = true
+            AutoSize = true,
+            Cursor = Cursors.Hand
         };
+        lblLanHint.Click += (s, e) => SetTransportMode(currentTransportMode == "lan" ? "internet" : "lan");
 
         receiverPanel.Controls.AddRange(new Control[] {
-            lblRecHeader, lblSessionId, txtSessionLink, lblPinTitle, txtSessionPin,
-            btnCopySession, btnNewSession, lblLanHint
+            lblRecHeader, btnRecCloud, btnRecLan, lblSessionId, txtSessionLink, lblPinTitle, txtSessionPin,
+            btnCopySession, btnCopyLanDirect, btnNewSession, lblLanHint
         });
         this.Controls.Add(receiverPanel);
 
@@ -537,8 +584,8 @@ public class MwbDesktopAppForm : Form {
         btnModeCloud.Click += (s, e) => SetTransportMode("internet");
         btnModeLan.Click += (s, e) => SetTransportMode("lan");
 
-        Label lblTargetEndpoint = new Label {
-            Text = "Remote Session Endpoint or IP",
+        lblTargetEndpoint = new Label {
+            Text = "Remote Session Endpoint (mwb://...) or LAN IP (ws://192.168.x.x:8765)",
             Font = new Font("Segoe UI", 8.5f),
             ForeColor = TextMuted,
             Location = new Point(20, 42),
@@ -563,6 +610,14 @@ public class MwbDesktopAppForm : Form {
                 if (!string.IsNullOrEmpty(pinPart)) {
                     txtTargetPin.Text = pinPart;
                 }
+            }
+            string clean = txtTargetLink.Text.Trim();
+            // Auto-detect LAN IP vs Cloud mwb:// link!
+            if (clean.StartsWith("ws://", StringComparison.OrdinalIgnoreCase) ||
+                System.Text.RegularExpressions.Regex.IsMatch(clean, @"^\d{1,3}(\.\d{1,3}){3}(:\d+)?$")) {
+                if (currentTransportMode != "lan") SetTransportMode("lan");
+            } else if (clean.StartsWith("mwb://", StringComparison.OrdinalIgnoreCase) || clean.StartsWith("mwb-", StringComparison.OrdinalIgnoreCase)) {
+                if (currentTransportMode != "internet") SetTransportMode("internet");
             }
         };
 
@@ -613,14 +668,30 @@ public class MwbDesktopAppForm : Form {
         };
 
         btnConnect = CreateFlatButton(
-            "LINK & ARM EDGE",
+            "CONNECT ONLINE",
             new Point(20, 136),
-            new Size(318, 38),
+            new Size(168, 38),
+            AccentAmber,
+            Color.FromArgb(10, 10, 12),
+            Color.Empty
+        );
+        btnConnect.Click += (s, e) => {
+            SetTransportMode("internet");
+            ConnectFromNativeDesktop();
+        };
+
+        Button btnConnectLan = CreateFlatButton(
+            "CONNECT VIA LAN",
+            new Point(196, 136),
+            new Size(142, 38),
             AccentEmerald,
             Color.FromArgb(10, 10, 12),
             Color.Empty
         );
-        btnConnect.Click += (s, e) => ConnectFromNativeDesktop();
+        btnConnectLan.Click += (s, e) => {
+            SetTransportMode("lan");
+            ConnectFromNativeDesktop();
+        };
 
         btnDisconnect = CreateFlatButton(
             "DISCONNECT",
@@ -634,7 +705,7 @@ public class MwbDesktopAppForm : Form {
 
         controllerPanel.Controls.AddRange(new Control[] {
             lblCtrlHeader, btnModeCloud, btnModeLan, lblTargetEndpoint, txtTargetLink,
-            lblTargetKey, txtTargetPin, chkOsHooks, chkClipboard, lblEscHint, btnConnect, btnDisconnect
+            lblTargetKey, txtTargetPin, chkOsHooks, chkClipboard, lblEscHint, btnConnect, btnConnectLan, btnDisconnect
         });
         this.Controls.Add(controllerPanel);
 
@@ -664,10 +735,37 @@ public class MwbDesktopAppForm : Form {
     private void SetTransportMode(string mode) {
         currentTransportMode = mode;
         bool isCloud = (mode == "internet");
+
+        // Update Controller buttons
         btnModeCloud.ForeColor = isCloud ? AccentAmber : TextMuted;
         btnModeCloud.FlatAppearance.BorderColor = isCloud ? AccentAmber : BorderSubtle;
-        btnModeLan.ForeColor = !isCloud ? AccentAmber : TextMuted;
-        btnModeLan.FlatAppearance.BorderColor = !isCloud ? AccentAmber : BorderSubtle;
+        btnModeLan.ForeColor = !isCloud ? AccentEmerald : TextMuted;
+        btnModeLan.FlatAppearance.BorderColor = !isCloud ? AccentEmerald : BorderSubtle;
+
+        // Update Receiver buttons & displayed endpoint
+        if (btnRecCloud != null && btnRecLan != null) {
+            btnRecCloud.ForeColor = isCloud ? AccentAmber : TextMuted;
+            btnRecCloud.FlatAppearance.BorderColor = isCloud ? AccentAmber : BorderSubtle;
+            btnRecLan.ForeColor = !isCloud ? AccentEmerald : TextMuted;
+            btnRecLan.FlatAppearance.BorderColor = !isCloud ? AccentEmerald : BorderSubtle;
+        }
+        if (lblSessionId != null) {
+            lblSessionId.Text = isCloud
+                ? "Internet Session Endpoint (Works Across Any Network)"
+                : "Local LAN WebSocket Address (Ultra-Low Latency Same Wi-Fi)";
+        }
+        if (txtSessionLink != null) {
+            txtSessionLink.Text = isCloud ? cachedCloudUrl : cachedLanUrl;
+            txtSessionLink.ForeColor = isCloud ? TextPrimary : AccentEmerald;
+        }
+        if (btnCopySession != null) {
+            btnCopySession.Text = isCloud ? "COPY INTERNET KEY" : "COPY LAN IP + KEY";
+        }
+        if (lblTargetEndpoint != null) {
+            lblTargetEndpoint.Text = isCloud
+                ? "Remote Internet Session Endpoint (mwb://...)"
+                : "Remote LAN IP Address (e.g. ws://192.168.1.x:8765 or 192.168.1.x)";
+        }
     }
 
     private string GetInverseEdge(string edge) {
@@ -749,6 +847,28 @@ public class MwbDesktopAppForm : Form {
         };
     }
 
+    private string ResolveNodeExecutablePath() {
+        string[] candidates = new string[] {
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "nodejs", "node.exe"),
+            @"C:\Program Files\nodejs\node.exe",
+            @"C:\Program Files (x86)\nodejs\node.exe",
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Programs", "nodejs", "node.exe"),
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "nvm", "current", "node.exe")
+        };
+        foreach (string c in candidates) {
+            if (File.Exists(c)) return c;
+        }
+        try {
+            string pathEnv = Environment.GetEnvironmentVariable("PATH") ?? "";
+            foreach (string dir in pathEnv.Split(';')) {
+                if (string.IsNullOrEmpty(dir)) continue;
+                string p = Path.Combine(dir.Trim(), "node.exe");
+                if (File.Exists(p)) return p;
+            }
+        } catch {}
+        return null;
+    }
+
     private void EnsureBackendServiceRunning() {
         try {
             using (var wc = new System.Net.WebClient()) {
@@ -770,17 +890,30 @@ public class MwbDesktopAppForm : Form {
         }
 
         try {
-            ProcessStartInfo psi = new ProcessStartInfo {
-                FileName = "node",
-                Arguments = "\"" + serverScript + "\"",
-                WorkingDirectory = Path.GetDirectoryName(serverScript),
-                UseShellExecute = false,
-                CreateNoWindow = true
-            };
+            string nodeExe = ResolveNodeExecutablePath();
+            ProcessStartInfo psi;
+            if (!string.IsNullOrEmpty(nodeExe)) {
+                psi = new ProcessStartInfo {
+                    FileName = nodeExe,
+                    Arguments = "\"" + serverScript + "\"",
+                    WorkingDirectory = Path.GetDirectoryName(serverScript),
+                    UseShellExecute = false,
+                    CreateNoWindow = true
+                };
+            } else {
+                // Fallback through cmd.exe so user/system PATH extensions are searched
+                psi = new ProcessStartInfo {
+                    FileName = "cmd.exe",
+                    Arguments = "/c node \"" + serverScript + "\"",
+                    WorkingDirectory = Path.GetDirectoryName(serverScript),
+                    UseShellExecute = false,
+                    CreateNoWindow = true
+                };
+            }
             serverProcess = Process.Start(psi);
             SetFooter("Native OS input & encrypted relay service started");
         } catch (Exception ex) {
-            SetFooter("Service error: " + ex.Message);
+            SetFooter("Service error: " + ex.Message + " (Ensure Node.js is installed from nodejs.org)");
         }
     }
 
@@ -936,14 +1069,19 @@ public class MwbDesktopAppForm : Form {
                 bool hooksOk = json.Contains("\"osHooksInstalled\":true");
                 bool ctrlConnected = json.Contains("\"controllerConnected\":true");
 
-                if (!string.IsNullOrEmpty(pubUrl) && txtSessionLink.Text != pubUrl) {
-                    txtSessionLink.Text = pubUrl;
+                if (!string.IsNullOrEmpty(pubUrl)) {
+                    cachedCloudUrl = pubUrl;
+                }
+                if (!string.IsNullOrEmpty(lanUrl)) {
+                    cachedLanUrl = lanUrl;
+                    lblLanHint.Text = "LAN DIRECT (SAME WI-FI)  ·  " + lanUrl + "  [CLICK TO USE LAN]";
+                }
+                string desiredEndpoint = (currentTransportMode == "lan") ? cachedLanUrl : cachedCloudUrl;
+                if (!string.IsNullOrEmpty(desiredEndpoint) && txtSessionLink.Text != desiredEndpoint) {
+                    txtSessionLink.Text = desiredEndpoint;
                 }
                 if (!string.IsNullOrEmpty(pin) && txtSessionPin.Text != pin) {
                     txtSessionPin.Text = pin;
-                }
-                if (!string.IsNullOrEmpty(lanUrl)) {
-                    lblLanHint.Text = "LAN DIRECT  ·  " + lanUrl;
                 }
 
                 // Trigger interactive Accept/Decline popup on Receiver when a new connection request arrives
