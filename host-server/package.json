@@ -1,0 +1,16 @@
+{
+  "name": "lan-kvm-host",
+  "version": "1.1.0",
+  "description": "Local Network & Internet Mouse & Keyboard Host Server for Chrome Extension",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "start:internet": "node server.js --internet"
+  },
+  "dependencies": {
+    "cloudflared": "^0.7.3",
+    "localtunnel": "^2.0.2",
+    "mqtt": "^5.16.1",
+    "ws": "^8.18.0"
+  }
+}

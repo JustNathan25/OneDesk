@@ -1,0 +1,4 @@
+host-server/node_modules/
+host-server/host-config.json
+*.log
+.DS_Store

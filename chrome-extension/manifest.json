@@ -1,0 +1,30 @@
+{
+  "manifest_version": 3,
+  "name": "Mouse Without Borders - LAN & Internet KVM",
+  "version": "1.2.0",
+  "description": "Connect two computers over LAN or Internet like 2 extended monitors. Keeps persistent connection even when minimized or switching tabs.",
+  "permissions": [
+    "storage",
+    "activeTab",
+    "scripting",
+    "alarms"
+  ],
+  "host_permissions": [
+    "http://*/*",
+    "https://*/*",
+    "ws://*/*",
+    "wss://*/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Mouse Without Borders Controller"
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}
