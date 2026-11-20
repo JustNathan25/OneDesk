@@ -1,4 +1,4 @@
 @echo off
-title OneDesk - Smart App Control Compatible Installer
+title OneDesk Setup Wizard
 cd /d "%~dp0"
-powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0Update-OneDesk.ps1"
+powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "%~dp0Setup-OneDesk.ps1"
