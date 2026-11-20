@@ -428,7 +428,7 @@ public class OneDeskInstallerForm : Form {
                 CopyDirectoryRecursive(sourceDir, targetDir);
             }
 
-            UpdateProgressUI("Clearing Smart App Control Zone.Identifier flags...", 55);
+            UpdateProgressUI("Clearing Smart App Control Zone.Identifier flags...", 45);
             try {
                 Process pUnblock = Process.Start(new ProcessStartInfo {
                     FileName = "powershell.exe",
@@ -438,6 +438,43 @@ public class OneDeskInstallerForm : Form {
                 });
                 pUnblock.WaitForExit(5000);
             } catch {}
+
+            // Automatically detect if Node.js is installed on this PC; if missing, install it automatically via winget or official MSI!
+            string[] nodeCandidates = new string[] {
+                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "nodejs", "node.exe"),
+                @"C:\Program Files\nodejs\node.exe",
+                @"C:\Program Files (x86)\nodejs\node.exe",
+                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Programs", "nodejs", "node.exe")
+            };
+            bool hasNode = false;
+            foreach (string nc in nodeCandidates) {
+                if (File.Exists(nc)) { hasNode = true; break; }
+            }
+            if (!hasNode) {
+                try {
+                    Process pCheck = Process.Start(new ProcessStartInfo {
+                        FileName = "cmd.exe",
+                        Arguments = "/c node -v",
+                        UseShellExecute = false,
+                        CreateNoWindow = true
+                    });
+                    pCheck.WaitForExit(3000);
+                    if (pCheck.ExitCode == 0) hasNode = true;
+                } catch {}
+            }
+
+            if (!hasNode) {
+                UpdateProgressUI("Node.js not found — automatically installing Node.js LTS via Windows winget...", 58);
+                try {
+                    Process pWinget = Process.Start(new ProcessStartInfo {
+                        FileName = "powershell.exe",
+                        Arguments = "-NoProfile -WindowStyle Hidden -Command \"winget install --id OpenJS.NodeJS.LTS -e --silent --accept-package-agreements --accept-source-agreements\"",
+                        UseShellExecute = false,
+                        CreateNoWindow = true
+                    });
+                    pWinget.WaitForExit(120000);
+                } catch {}
+            }
 
             string nodeModulesDir = Path.Combine(targetDir, "host-server", "node_modules");
             if (!Directory.Exists(nodeModulesDir)) {
@@ -452,9 +489,10 @@ public class OneDeskInstallerForm : Form {
                     });
                     pRobo.WaitForExit(20000);
                 } else {
+                    string npmCmd = File.Exists(@"C:\Program Files\nodejs\npm.cmd") ? @"C:\Program Files\nodejs\npm.cmd" : "npm";
                     Process pNpm = Process.Start(new ProcessStartInfo {
                         FileName = "cmd.exe",
-                        Arguments = "/c npm install --no-audit --no-fund",
+                        Arguments = "/c \"" + npmCmd + "\" install --no-audit --no-fund",
                         WorkingDirectory = Path.Combine(targetDir, "host-server"),
                         UseShellExecute = false,
                         CreateNoWindow = true
