@@ -361,12 +361,13 @@ public class OneDeskInstallerForm : Form {
             if (chkLaunchNow.Checked) {
                 try {
                     string ps1 = Path.Combine(targetDir, "OneDesk.ps1");
+                    string psExe = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), @"WindowsPowerShell\v1.0\powershell.exe");
                     Process.Start(new ProcessStartInfo {
-                        FileName = "powershell.exe",
+                        FileName = psExe,
                         Arguments = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \"" + ps1 + "\"",
                         WorkingDirectory = targetDir,
-                        UseShellExecute = false,
-                        CreateNoWindow = true
+                        UseShellExecute = true,
+                        WindowStyle = ProcessWindowStyle.Hidden
                     });
                 } catch {}
             }
@@ -379,58 +380,59 @@ public class OneDeskInstallerForm : Form {
         foreach (string file in Directory.GetFiles(src)) {
             string name = Path.GetFileName(file);
             if (name.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)) continue;
-            File.Copy(file, Path.Combine(dst, name), true);
+            string destFile = Path.Combine(dst, name);
+            if (File.Exists(destFile)) {
+                try { File.SetAttributes(destFile, FileAttributes.Normal); } catch {}
+            }
+            File.Copy(file, destFile, true);
         }
         foreach (string dir in Directory.GetDirectories(src)) {
             string dirName = Path.GetFileName(dir);
+            if (string.Equals(dirName, "node_modules", StringComparison.OrdinalIgnoreCase)) continue;
             CopyDirectoryRecursive(dir, Path.Combine(dst, dirName));
         }
     }
 
     private void CreateWindowsShortcut(string shortcutPath, string targetDir) {
-        string psScript = string.Format(
-            "$WshShell = New-Object -ComObject WScript.Shell; " +
-            "$Shortcut = $WshShell.CreateShortcut('{0}'); " +
-            "$Shortcut.TargetPath = \"$env:SystemRoot\\System32\\WindowsPowerShell\\v1.0\\powershell.exe\"; " +
-            "$Shortcut.Arguments = '-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \"{1}\\OneDesk.ps1\"'; " +
-            "$Shortcut.WorkingDirectory = '{1}'; " +
-            "$Shortcut.Description = 'OneDesk - Seamless Multi-PC Mouse & Keyboard'; " +
-            "$Shortcut.Save()",
-            shortcutPath.Replace("'", "''"),
-            targetDir.Replace("'", "''")
-        );
-        Process p = Process.Start(new ProcessStartInfo {
-            FileName = "powershell.exe",
-            Arguments = "-NoProfile -ExecutionPolicy Bypass -Command \"" + psScript + "\"",
-            UseShellExecute = false,
-            CreateNoWindow = true
-        });
-        p.WaitForExit(5000);
+        try {
+            Type shellType = Type.GetTypeFromProgID("WScript.Shell");
+            if (shellType == null) return;
+            object shell = Activator.CreateInstance(shellType);
+            object shortcut = shellType.InvokeMember("CreateShortcut", System.Reflection.BindingFlags.InvokeMethod, null, shell, new object[] { shortcutPath });
+            Type scType = shortcut.GetType();
+            string psExe = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), @"WindowsPowerShell\v1.0\powershell.exe");
+            scType.InvokeMember("TargetPath", System.Reflection.BindingFlags.SetProperty, null, shortcut, new object[] { psExe });
+            scType.InvokeMember("Arguments", System.Reflection.BindingFlags.SetProperty, null, shortcut, new object[] { "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \"" + Path.Combine(targetDir, "OneDesk.ps1") + "\"" });
+            scType.InvokeMember("WorkingDirectory", System.Reflection.BindingFlags.SetProperty, null, shortcut, new object[] { targetDir });
+            scType.InvokeMember("Description", System.Reflection.BindingFlags.SetProperty, null, shortcut, new object[] { "OneDesk - Seamless Multi-PC Mouse & Keyboard" });
+            scType.InvokeMember("Save", System.Reflection.BindingFlags.InvokeMethod, null, shortcut, null);
+        } catch {}
     }
 
     private void RunInstallation(string targetDir, bool makeDesktop, bool makeStartMenu) {
         try {
-            UpdateProgressUI("Stopping any running OneDesk background instances...", 12);
+            UpdateProgressUI("Checking for active OneDesk processes...", 12);
+            int myPid = Process.GetCurrentProcess().Id;
             try {
                 Process pStop = Process.Start(new ProcessStartInfo {
                     FileName = "powershell.exe",
-                    Arguments = "-NoProfile -Command \"Get-CimInstance Win32_Process | Where-Object { ($_.Name -eq 'node.exe' -and $_.CommandLine -like '*server.js*') -or ($_.Name -eq 'powershell.exe' -and $_.CommandLine -like '*OneDesk.ps1*') } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }\"",
+                    Arguments = "-NoProfile -WindowStyle Hidden -Command \"Get-CimInstance Win32_Process | Where-Object { $_.ProcessId -ne " + myPid + " -and (($_.Name -eq 'node.exe' -and $_.CommandLine -like '*server.js*') -or ($_.Name -eq 'powershell.exe' -and $_.CommandLine -like '*OneDesk.ps1*')) } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }\"",
                     UseShellExecute = false,
                     CreateNoWindow = true
                 });
-                pStop.WaitForExit(4000);
+                pStop.WaitForExit(3500);
             } catch {}
 
-            UpdateProgressUI("Installing files to " + targetDir + "...", 35);
-            if ( !string.Equals(Path.GetFullPath(sourceDir).TrimEnd('\\'), Path.GetFullPath(targetDir).TrimEnd('\\'), StringComparison.OrdinalIgnoreCase) ) {
+            UpdateProgressUI("Installing application files to " + targetDir + "...", 35);
+            if (!string.Equals(Path.GetFullPath(sourceDir).TrimEnd('\\'), Path.GetFullPath(targetDir).TrimEnd('\\'), StringComparison.OrdinalIgnoreCase)) {
                 CopyDirectoryRecursive(sourceDir, targetDir);
             }
 
-            UpdateProgressUI("Unblocking Smart App Control Zone.Identifier attributes...", 55);
+            UpdateProgressUI("Clearing Smart App Control Zone.Identifier flags...", 55);
             try {
                 Process pUnblock = Process.Start(new ProcessStartInfo {
                     FileName = "powershell.exe",
-                    Arguments = "-NoProfile -Command \"Get-ChildItem -Path '" + targetDir.Replace("'", "''") + "' -Recurse | Unblock-File -ErrorAction SilentlyContinue\"",
+                    Arguments = "-NoProfile -WindowStyle Hidden -Command \"Get-ChildItem -Path '" + targetDir.Replace("'", "''") + "' -Recurse | Unblock-File -ErrorAction SilentlyContinue\"",
                     UseShellExecute = false,
                     CreateNoWindow = true
                 });
@@ -440,14 +442,25 @@ public class OneDeskInstallerForm : Form {
             string nodeModulesDir = Path.Combine(targetDir, "host-server", "node_modules");
             if (!Directory.Exists(nodeModulesDir)) {
                 UpdateProgressUI("Installing Node.js transport packages (ws, mqtt)...", 72);
-                Process pNpm = Process.Start(new ProcessStartInfo {
-                    FileName = "cmd.exe",
-                    Arguments = "/c npm install --silent",
-                    WorkingDirectory = Path.Combine(targetDir, "host-server"),
-                    UseShellExecute = false,
-                    CreateNoWindow = true
-                });
-                pNpm.WaitForExit(45000);
+                string srcNodeModules = Path.Combine(sourceDir, "host-server", "node_modules");
+                if (Directory.Exists(srcNodeModules)) {
+                    Process pRobo = Process.Start(new ProcessStartInfo {
+                        FileName = "robocopy.exe",
+                        Arguments = "\"" + srcNodeModules + "\" \"" + nodeModulesDir + "\" /E /NFL /NDL /NJH /NJS /NC /NS /NP",
+                        UseShellExecute = false,
+                        CreateNoWindow = true
+                    });
+                    pRobo.WaitForExit(20000);
+                } else {
+                    Process pNpm = Process.Start(new ProcessStartInfo {
+                        FileName = "cmd.exe",
+                        Arguments = "/c npm install --no-audit --no-fund",
+                        WorkingDirectory = Path.Combine(targetDir, "host-server"),
+                        UseShellExecute = false,
+                        CreateNoWindow = true
+                    });
+                    pNpm.WaitForExit(60000);
+                }
             }
 
             if (makeDesktop) {
