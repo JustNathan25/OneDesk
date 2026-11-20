@@ -3,222 +3,154 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Mouse Without Borders — Seamless Dual-Monitor KVM</title>
+  <title>OneDesk — Multi-System Input Console</title>
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body class="workspace-body">
-  <!-- Seamless Edge Sensor Strips (Top, Bottom, Left, Right) -->
-  <div id="edgePortalLeft" class="edge-portal edge-left" data-edge="left">
-    <span>⬅️ Pass Mouse to Host Monitor (Left)</span>
-  </div>
-  <div id="edgePortalRight" class="edge-portal edge-right" data-edge="right">
-    <span>Pass Mouse to Host Monitor (Right) ➡️</span>
-  </div>
-  <div id="edgePortalTop" class="edge-portal edge-top" data-edge="top">
-    <span>⬆️ Pass Mouse to Host Monitor (Top) ⬆️</span>
-  </div>
-  <div id="edgePortalBottom" class="edge-portal edge-bottom" data-edge="bottom">
-    <span>⬇️ Pass Mouse to Host Monitor (Bottom) ⬇️</span>
-  </div>
+  <!-- Seamless Edge Sensor Strips -->
+  <div id="edgePortalLeft" class="edge-portal edge-left" data-edge="left"><span>← LEFT SEAM</span></div>
+  <div id="edgePortalRight" class="edge-portal edge-right" data-edge="right"><span>RIGHT SEAM →</span></div>
+  <div id="edgePortalTop" class="edge-portal edge-top" data-edge="top"><span>↑ TOP SEAM</span></div>
+  <div id="edgePortalBottom" class="edge-portal edge-bottom" data-edge="bottom"><span>↓ BOTTOM SEAM</span></div>
 
-  <div class="workspace-container">
-    <!-- Top Connection & Role Bar -->
+  <div class="shell">
+    <!-- Minimalist Top Bar -->
     <header class="topbar">
       <div class="brand">
+        <span class="brand-mark">ONEDESK</span>
+        <span class="divider">/</span>
         <div class="status-dot" id="wsDot"></div>
-        <h2>Mouse Without Borders</h2>
-        <span class="badge" id="wsStatus">Disconnected</span>
-        <span class="active-screen-pill" id="activeScreenBadge">Active: This PC (Monitor 1)</span>
+        <span class="status-text" id="wsStatus">STANDBY</span>
+        <span class="active-screen-pill" id="activeScreenBadge">LOCAL FOCUS</span>
       </div>
 
-      <!-- Role Toggle in Topbar: HOST MODE (Generate Link) vs USER MODE (Pass Mouse) -->
-      <div class="connection-controls">
-        <div class="mode-pills">
-          <button type="button" id="wsRoleHostBtn" class="pill-btn">🖥️ Host Mode (Generate Link)</button>
-          <button type="button" id="wsRoleClientBtn" class="pill-btn active">🖱️ User Mode (Pass Mouse)</button>
-        </div>
-
-        <div class="mode-pills">
-          <button type="button" id="wsModeInternetBtn" class="pill-btn active">🌐 Internet</button>
-          <button type="button" id="wsModeLanBtn" class="pill-btn">🏠 LAN</button>
-        </div>
-
-        <!-- Internet URL Input -->
-        <div id="wsInternetGroup" class="inline-inputs">
-          <input
-            type="text"
-            id="wsInternetUrl"
-            class="internet-url-input"
-            placeholder="Paste Host Internet Link (mwb://mwb-xxxx)"
-          />
-        </div>
-
-        <!-- LAN Inputs -->
-        <div id="wsLanGroup" class="inline-inputs" style="display: none;">
-          <input type="text" id="wsIp" placeholder="Host LAN IP (192.168.1.100)" />
-          <input type="number" id="wsPort" placeholder="8765" class="port-input" />
-        </div>
-
-        <input type="password" id="wsPin" placeholder="PIN (opt)" class="pin-input" />
-        <button id="connectBtn" class="btn btn-primary btn-sm">Connect</button>
-        <button id="githubUpdateBtn" class="btn btn-secondary btn-sm" title="Pull latest changes from GitHub (OneDesk) and restart">🔄 Auto-Update</button>
-      </div>
-
-      <div class="telemetry">
-        <div class="metric">
-          <span class="metric-label">Host</span>
-          <span class="metric-val" id="hostNameMetric">--</span>
-        </div>
-        <div class="metric">
-          <span class="metric-label">Latency</span>
-          <span class="metric-val" id="latencyMetric">-- ms</span>
-        </div>
-        <div class="metric">
-          <span class="metric-label">Speed</span>
-          <input type="range" id="wsSensitivity" min="0.4" max="3.5" step="0.1" value="1.4" />
-          <span class="metric-val" id="wsSensitivityVal">1.4x</span>
-        </div>
+      <div class="top-actions">
+        <span class="badge" id="osHookBadge">OS HOOKS READY</span>
+        <button id="githubUpdateBtn" class="btn-ghost" title="Pull latest changes from GitHub (OneDesk) and restart">GIT SYNC</button>
       </div>
     </header>
 
-    <!-- Main Split View -->
-    <main class="main-grid">
-      <!-- Center Interactive Dual-Monitor Map & Border Portal -->
-      <section class="capture-section">
-        <!-- NATIVE DESKTOP OS PERMISSION & CONSENT BAR -->
-        <div id="nativeOsBanner" class="host-generator-banner">
-          <div class="host-gen-left">
-            <span class="host-gen-title">🛡️ Native OS Input Hooks:</span>
-            <span class="badge" id="osHookBadge">Checking Native Service...</span>
+    <!-- Single Focused Studio Console -->
+    <main class="studio-console">
+      <!-- Role & Transport Segmented Bar -->
+      <div class="control-strip">
+        <div class="seg-group">
+          <button type="button" id="wsRoleHostBtn" class="seg-btn">RECEIVER (SHARE)</button>
+          <button type="button" id="wsRoleClientBtn" class="seg-btn active">CONTROLLER (SEND)</button>
+        </div>
+
+        <div class="seg-group">
+          <button type="button" id="wsModeInternetBtn" class="seg-btn active">CLOUD RELAY</button>
+          <button type="button" id="wsModeLanBtn" class="seg-btn">DIRECT LAN</button>
+        </div>
+      </div>
+
+      <!-- Interactive Dual-Display Seam Canvas -->
+      <section class="canvas-card" id="capturePad" tabindex="0">
+        <div class="canvas-meta">
+          <div>
+            <h3 id="captureTitle">Display Seam Topology</h3>
+            <p id="captureSub">Cross the active <strong id="activeEdgeLabel">RIGHT</strong> border to hand off physical mouse &amp; keyboard control.</p>
           </div>
-          <div class="host-gen-right" style="justify-content: flex-end;">
-            <label style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer;">
+          <div class="edge-selector">
+            <button class="edge-pill layout-chip" data-pos="left">← LEFT</button>
+            <button class="edge-pill layout-chip active" data-pos="right">RIGHT →</button>
+            <button class="edge-pill layout-chip" data-pos="top">↑ TOP</button>
+            <button class="edge-pill layout-chip" data-pos="bottom">↓ BOTTOM</button>
+          </div>
+        </div>
+
+        <div class="monitors-arena" id="monitorsArena" data-layout="right">
+          <div class="monitor-box active-monitor" id="clientMonitorBox">
+            <div class="mon-index">01</div>
+            <div class="monitor-title">THIS PC</div>
+            <div class="monitor-res" id="clientResLabel">1920 × 1080</div>
+            <div class="monitor-cursor client-dot" id="clientRadarDot"></div>
+          </div>
+
+          <div class="monitor-box" id="hostMonitorBox">
+            <div class="mon-index">02</div>
+            <div class="monitor-title">REMOTE PC</div>
+            <div class="monitor-res" id="hostResLabel">1920 × 1080</div>
+            <div class="monitor-cursor host-dot" id="hostRadarDot" style="display: none;"></div>
+          </div>
+        </div>
+
+        <div class="canvas-footer">
+          <span>HOTKEY RETURN: <kbd>ESC</kbd> OR <kbd>CTRL+ALT+Q</kbd></span>
+          <div class="toggle-group">
+            <label class="clean-check">
               <input type="checkbox" id="osGlobalCaptureToggle" checked />
-              <span>Enable OS-Wide Screen Edge Capture (Beyond Browser)</span>
+              <span>OS Edge Capture</span>
             </label>
-            <label style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer;margin-left:10px;">
+            <label class="clean-check">
               <input type="checkbox" id="clipboardSyncToggle" checked />
-              <span>Share Clipboard</span>
+              <span>Shared Clipboard</span>
             </label>
           </div>
-        </div>
-
-        <!-- HOST MODE BANNER -->
-        <div id="hostLinkGeneratorCard" class="host-generator-banner">
-          <div class="host-gen-left">
-            <span class="host-gen-title">🖥️ Receiver Session Link & Pairing PIN:</span>
-            <button type="button" id="wsGenerateLinkBtn" class="btn btn-primary btn-sm">
-              🔄 New Session & PIN
-            </button>
-          </div>
-          <div class="host-gen-right">
-            <input
-              type="text"
-              id="discoveredTunnelUrl"
-              readonly
-              placeholder="Generating persistent Session ID (mwb://...)..."
-            />
-            <input
-              type="text"
-              id="discoveredPairingPin"
-              readonly
-              style="width:95px !important;text-align:center;"
-              title="6-Digit Pairing PIN (AES-256-GCM)"
-              placeholder="PIN"
-            />
-            <button type="button" id="copyTunnelBtn" class="btn btn-secondary btn-sm">Copy Link + PIN</button>
-          </div>
-        </div>
-
-        <div id="capturePad" class="capture-pad" tabindex="0">
-          <div class="mwb-stage">
-            <div class="mwb-header">
-              <h3 id="captureTitle">Seamless 2-Monitor Mode Active (No Duplicate Movements)</h3>
-              <p id="captureSub">
-                Move your mouse across the glowing <strong><span id="activeEdgeLabel">RIGHT</span> edge</strong> of this window to pass your cursor onto the 2nd device. Move it back across the shared border to return here automatically!
-              </p>
-            </div>
-
-            <!-- Interactive Dual-Monitor Arrangement Visualizer -->
-            <div class="monitors-arena" id="monitorsArena" data-layout="right">
-              <!-- Monitor 1: User Device (Pass-through source) -->
-              <div class="monitor-box active-monitor" id="clientMonitorBox">
-                <div class="monitor-title">🖱️ User Device (Monitor 1)</div>
-                <div class="monitor-res" id="clientResLabel">Mouse Active Here</div>
-                <div class="monitor-cursor client-dot" id="clientRadarDot"></div>
-              </div>
-
-              <!-- Monitor 2: Host Device (Receives passed-through mouse) -->
-              <div class="monitor-box" id="hostMonitorBox">
-                <div class="monitor-title">🖥️ Host Device (Monitor 2)</div>
-                <div class="monitor-res" id="hostResLabel">1920 × 1080</div>
-                <div class="monitor-cursor host-dot" id="hostRadarDot" style="display: none;"></div>
-                <div class="jump-hint">Click or Cross Border to Pass Mouse Here</div>
-              </div>
-            </div>
-
-            <div class="shortcut-hint">
-              Slide back across the shared screen border OR press <kbd>ESC</kbd> / <kbd>Ctrl + Alt + Q</kbd> to return to Monitor 1
-            </div>
-          </div>
-        </div>
-
-        <!-- Quick Special Key Bar -->
-        <div class="quick-keys">
-          <span class="quick-label">Which Edge Passes Mouse to Host?</span>
-          <button class="btn btn-chip layout-chip" data-pos="left">⬅️ Left Edge</button>
-          <button class="btn btn-chip layout-chip active" data-pos="right">➡️ Right Edge</button>
-          <button class="btn btn-chip layout-chip" data-pos="top">⬆️ Top Edge</button>
-          <button class="btn btn-chip layout-chip" data-pos="bottom">⬇️ Bottom Edge</button>
-          <span class="quick-divider">|</span>
-          <span class="quick-label">Send to Host:</span>
-          <button class="btn btn-chip key-chip" data-vk="91">Win</button>
-          <button class="btn btn-chip key-chip" data-combo="alt-tab">Alt+Tab</button>
-          <button class="btn btn-chip key-chip" data-combo="ctrl-c">Ctrl+C</button>
-          <button class="btn btn-chip key-chip" data-combo="ctrl-v">Ctrl+V</button>
         </div>
       </section>
 
-      <!-- Live Telemetry & Instructions -->
-      <aside class="sidebar">
-        <div class="panel">
-          <h4>Live Border & Input Telemetry</h4>
+      <!-- Clean Two-Column Pairing & Connection Deck -->
+      <section class="pairing-deck">
+        <!-- Receiver Credentials Card -->
+        <div id="hostLinkGeneratorCard" class="deck-card">
+          <div class="card-head">
+            <span class="card-label">THIS PC · RECEIVER CREDENTIALS</span>
+            <button type="button" id="wsGenerateLinkBtn" class="btn-text">ROTATE KEY</button>
+          </div>
+          <div class="credential-row">
+            <input type="text" id="discoveredTunnelUrl" readonly placeholder="mwb://..." />
+            <input type="text" id="discoveredPairingPin" readonly class="pin-box" placeholder="PIN" />
+            <button type="button" id="copyTunnelBtn" class="btn-amber">COPY KEY</button>
+          </div>
+          <div class="lan-sub">
+            <span>LAN ENDPOINT:</span>
+            <input type="text" id="discoveredLanUrl" readonly class="inline-lan" />
+            <button id="copyLanUrlBtn" class="btn-text">COPY</button>
+          </div>
+        </div>
 
-          <!-- NEW: Live Incoming Peer Connection Status Card -->
-          <div class="peer-status-card" id="peerConnectionCard">
-            <div class="peer-status-header">
-              <span class="status-dot" id="peerStatusDot"></span>
-              <span class="peer-status-title" id="peerStatusTitle">Waiting for 2nd Device...</span>
+        <!-- Controller Target Card -->
+        <div class="deck-card">
+          <div class="card-head">
+            <span class="card-label">CONNECT TO REMOTE RECEIVER</span>
+            <span class="telemetry-inline">
+              <span id="hostNameMetric">NO PEER</span> · <span id="latencyMetric">-- ms</span>
+            </span>
+          </div>
+
+          <div class="credential-row">
+            <div id="wsInternetGroup" class="flex-fill">
+              <input type="text" id="wsInternetUrl" placeholder="Paste remote mwb:// endpoint" />
             </div>
-            <div class="peer-status-sub" id="peerStatusSub">
-              Shows live alerts when someone tries to connect or passes their mouse to this Host.
+            <div id="wsLanGroup" class="flex-fill" style="display: none;">
+              <input type="text" id="wsIp" placeholder="192.168.1.100" />
+              <input type="number" id="wsPort" placeholder="8765" class="port-box" />
             </div>
+            <input type="password" id="wsPin" placeholder="PIN" class="pin-box" />
+            <button id="connectBtn" class="btn-emerald">LINK</button>
           </div>
 
-          <div class="live-coords">
-            <div>Host X,Y: <strong id="hostXYVal">--</strong></div>
-            <div>Key: <strong id="lastKeyVal">None</strong></div>
-          </div>
-          <div id="eventLog" class="event-log"></div>
-        </div>
-
-        <div class="panel">
-          <h4>Local LAN Link (Same Wi-Fi)</h4>
-          <div class="tunnel-copy-row">
-            <input type="text" id="discoveredLanUrl" readonly placeholder="ws://192.168.1.x:8765" />
-            <button id="copyLanUrlBtn" class="btn btn-secondary btn-sm">Copy</button>
+          <div class="lan-sub">
+            <span id="peerStatusTitle">READY TO PAIR</span>
+            <span class="sep">·</span>
+            <span id="peerStatusSub">AES-256-GCM E2EE</span>
+            <span class="sep">·</span>
+            <span>SPEED</span>
+            <input type="range" id="wsSensitivity" min="0.4" max="3.5" step="0.1" value="1.4" class="slim-range" />
+            <span id="wsSensitivityVal">1.4x</span>
           </div>
         </div>
+      </section>
 
-        <div class="panel">
-          <h4>How Host & User Roles Work</h4>
-          <ul class="mwb-bullets">
-            <li><strong>1. Host Mode (Device B):</strong> Copy the persistent <code>mwb://...</code> Internet Link above (and ensure <code>start-host.bat</code> is running for OS cursor control).</li>
-            <li><strong>2. User Mode (Device A):</strong> Paste that Internet Link into the top bar and click <strong>Connect</strong>.</li>
-            <li><strong>3. Seamless Pass-Through:</strong> Move the User mouse across the glowing screen edge to control the Host device!</li>
-          </ul>
-        </div>
-      </aside>
+      <!-- Hidden compatibility nodes so controller.js telemetry calls remain error-free -->
+      <div style="display:none;">
+        <div id="peerConnectionCard"><span id="peerStatusDot"></span></div>
+        <strong id="hostXYVal"></strong>
+        <strong id="lastKeyVal"></strong>
+        <div id="eventLog"></div>
+      </div>
     </main>
   </div>
   <script src="mqtt.min.js"></script>

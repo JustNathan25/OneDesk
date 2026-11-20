@@ -1,63 +1,235 @@
 using System;
 using System.IO;
 using System.Drawing;
+using System.Drawing.Drawing2D;
 using System.Diagnostics;
 using System.Windows.Forms;
 using System.Runtime.InteropServices;
 
+// Custom GDI+ Interactive Display Arrangement Canvas
+public class MonitorCanvasPanel : Panel {
+    public string EdgePosition = "right"; // right, left, top, bottom
+    public string ActiveScreen = "client"; // client, host
+    public string LocalHostname = "THIS PC";
+    public string RemoteHostname = "REMOTE PC";
+    public event Action<string> OnEdgeChanged;
+
+    private Rectangle rectLocal;
+    private Rectangle rectRemote;
+
+    public MonitorCanvasPanel() {
+        this.DoubleBuffered = true;
+        this.BackColor = Color.FromArgb(14, 14, 17);
+        this.Cursor = Cursors.Hand;
+    }
+
+    protected override void OnMouseDown(MouseEventArgs e) {
+        base.OnMouseDown(e);
+        // Click around the center display to snap the 2nd display to that edge
+        int cx = this.Width / 2;
+        int cy = this.Height / 2;
+        int dx = e.X - cx;
+        int dy = e.Y - cy;
+
+        string nextEdge = EdgePosition;
+        if (Math.Abs(dx) > Math.Abs(dy)) {
+            nextEdge = dx >= 0 ? "right" : "left";
+        } else {
+            nextEdge = dy >= 0 ? "bottom" : "top";
+        }
+
+        if (nextEdge != EdgePosition) {
+            EdgePosition = nextEdge;
+            this.Invalidate();
+            if (OnEdgeChanged != null) OnEdgeChanged(EdgePosition);
+        }
+    }
+
+    protected override void OnPaint(PaintEventArgs e) {
+        base.OnPaint(e);
+        Graphics g = e.Graphics;
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+        g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
+
+        int w = this.Width;
+        int h = this.Height;
+
+        // Subtle outer border & dot matrix background
+        using (Pen borderPen = new Pen(Color.FromArgb(32, 32, 38), 1f)) {
+            g.DrawRectangle(borderPen, 0, 0, w - 1, h - 1);
+        }
+        using (SolidBrush dotBrush = new SolidBrush(Color.FromArgb(26, 26, 32))) {
+            for (int x = 18; x < w - 12; x += 20) {
+                for (int y = 18; y < h - 12; y += 20) {
+                    g.FillRectangle(dotBrush, x, y, 2, 2);
+                }
+            }
+        }
+
+        int monW = 112;
+        int monH = 68;
+        int gap = 8;
+        int cx = w / 2;
+        int cy = h / 2 - 4;
+
+        if (EdgePosition == "right") {
+            rectLocal = new Rectangle(cx - monW - gap / 2, cy - monH / 2, monW, monH);
+            rectRemote = new Rectangle(cx + gap / 2, cy - monH / 2, monW, monH);
+        } else if (EdgePosition == "left") {
+            rectRemote = new Rectangle(cx - monW - gap / 2, cy - monH / 2, monW, monH);
+            rectLocal = new Rectangle(cx + gap / 2, cy - monH / 2, monW, monH);
+        } else if (EdgePosition == "top") {
+            monW = 104;
+            monH = 56;
+            rectRemote = new Rectangle(cx - monW / 2, cy - monH - gap / 2, monW, monH);
+            rectLocal = new Rectangle(cx - monW / 2, cy + gap / 2, monW, monH);
+        } else {
+            monW = 104;
+            monH = 56;
+            rectLocal = new Rectangle(cx - monW / 2, cy - monH - gap / 2, monW, monH);
+            rectRemote = new Rectangle(cx - monW / 2, cy + gap / 2, monW, monH);
+        }
+
+        bool isRemoteActive = (ActiveScreen == "host");
+
+        DrawMonitorTile(g, rectLocal, "01", "THIS PC", !isRemoteActive, false);
+        DrawMonitorTile(g, rectRemote, "02", "REMOTE", isRemoteActive, true);
+
+        // Draw active seam line between the two monitors
+        using (Pen seamPen = new Pen(Color.FromArgb(217, 119, 6), 2.5f)) {
+            if (EdgePosition == "right") {
+                int sx = rectLocal.Right + gap / 2;
+                g.DrawLine(seamPen, sx, rectLocal.Top + 8, sx, rectLocal.Bottom - 8);
+            } else if (EdgePosition == "left") {
+                int sx = rectRemote.Right + gap / 2;
+                g.DrawLine(seamPen, sx, rectRemote.Top + 8, sx, rectRemote.Bottom - 8);
+            } else if (EdgePosition == "top") {
+                int sy = rectRemote.Bottom + gap / 2;
+                g.DrawLine(seamPen, rectRemote.Left + 10, sy, rectRemote.Right - 10, sy);
+            } else {
+                int sy = rectLocal.Bottom + gap / 2;
+                g.DrawLine(seamPen, rectLocal.Left + 10, sy, rectLocal.Right - 10, sy);
+            }
+        }
+
+        // Bottom caption inside canvas
+        string hint = "CLICK CANVAS TO ARRANGE SEAM  ·  ACTIVE EDGE: " + EdgePosition.ToUpper();
+        using (Font fHint = new Font("Consolas", 7.8f, FontStyle.Regular))
+        using (SolidBrush bHint = new SolidBrush(Color.FromArgb(113, 113, 122))) {
+            SizeF sf = g.MeasureString(hint, fHint);
+            g.DrawString(hint, fHint, bHint, (w - sf.Width) / 2f, h - 22);
+        }
+    }
+
+    private void DrawMonitorTile(Graphics g, Rectangle r, string indexTag, string label, bool isFocused, bool isRemote) {
+        Color fill = isFocused ? Color.FromArgb(24, 24, 29) : Color.FromArgb(18, 18, 22);
+        Color border = isFocused
+            ? (isRemote ? Color.FromArgb(16, 185, 129) : Color.FromArgb(228, 228, 231))
+            : Color.FromArgb(46, 46, 54);
+
+        using (SolidBrush bFill = new SolidBrush(fill)) {
+            g.FillRectangle(bFill, r);
+        }
+        using (Pen pBorder = new Pen(border, isFocused ? 1.6f : 1f)) {
+            g.DrawRectangle(pBorder, r);
+        }
+
+        using (Font fIndex = new Font("Consolas", 8f, FontStyle.Bold))
+        using (SolidBrush bIndex = new SolidBrush(isFocused ? border : Color.FromArgb(113, 113, 122))) {
+            g.DrawString(indexTag, fIndex, bIndex, r.X + 8, r.Y + 7);
+        }
+
+        if (isFocused) {
+            using (SolidBrush dot = new SolidBrush(isRemote ? Color.FromArgb(16, 185, 129) : Color.FromArgb(217, 119, 6))) {
+                g.FillEllipse(dot, r.Right - 14, r.Y + 9, 6, 6);
+            }
+        }
+
+        using (Font fLabel = new Font("Segoe UI Semibold", 8.5f, FontStyle.Bold))
+        using (SolidBrush bLabel = new SolidBrush(isFocused ? Color.FromArgb(244, 244, 245) : Color.FromArgb(161, 161, 170))) {
+            SizeF sf = g.MeasureString(label, fLabel);
+            g.DrawString(label, fLabel, bLabel, r.X + (r.Width - sf.Width) / 2f, r.Y + (r.Height - sf.Height) / 2f + 4);
+        }
+    }
+}
+
 public class MwbDesktopAppForm : Form {
+    [DllImport("dwmapi.dll")]
+    private static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int attrValue, int attrSize);
+
     private Process serverProcess;
     private NotifyIcon trayIcon;
     private ContextMenuStrip trayMenu;
 
-    private Label statusBadge;
-    private Label serviceDetailLabel;
-    private RadioButton radioReceiver;
-    private RadioButton radioController;
+    // Palette — Carbon Obsidian & Warm Amber Studio Aesthetic
+    private static readonly Color BgRoot = Color.FromArgb(10, 10, 12);
+    private static readonly Color BgSurface = Color.FromArgb(17, 17, 20);
+    private static readonly Color BgInput = Color.FromArgb(12, 12, 15);
+    private static readonly Color BorderSubtle = Color.FromArgb(34, 34, 40);
+    private static readonly Color TextPrimary = Color.FromArgb(244, 244, 245);
+    private static readonly Color TextMuted = Color.FromArgb(141, 141, 150);
+    private static readonly Color AccentAmber = Color.FromArgb(217, 119, 6);
+    private static readonly Color AccentEmerald = Color.FromArgb(16, 185, 129);
 
-    // Receiver Controls
+    // Header & Role Tabs
+    private Label lblStatusDot;
+    private Label lblStatusText;
+    private Button btnAutoUpdate;
+    private Button btnTabReceiver;
+    private Button btnTabController;
+    private Panel tabIndicator;
+
+    // Interactive Display Canvas
+    private MonitorCanvasPanel monitorCanvas;
+    private Button[] edgeButtons = new Button[4];
+
+    // Receiver Card
     private Panel receiverPanel;
     private TextBox txtSessionLink;
     private TextBox txtSessionPin;
-    private TextBox txtLanLink;
-    private Button btnNewSession;
+    private Label lblLanHint;
     private Button btnCopySession;
+    private Button btnNewSession;
 
-    // Controller Controls
+    // Controller Card
     private Panel controllerPanel;
-    private RadioButton radioModeInternet;
-    private RadioButton radioModeLan;
+    private Button btnModeCloud;
+    private Button btnModeLan;
     private TextBox txtTargetLink;
     private TextBox txtTargetPin;
-    private ComboBox cmbEdge;
     private CheckBox chkOsHooks;
     private CheckBox chkClipboard;
     private Button btnConnect;
     private Button btnDisconnect;
 
-    // Visual Dual-Monitor Stage
-    private Panel monitorStage;
-    private Panel boxMonitor1;
-    private Panel boxMonitor2;
-    private Label lblMonitor1;
-    private Label lblMonitor2;
-    private TextBox txtLog;
-    private Button btnAutoUpdate;
-    private System.Windows.Forms.Timer gitCheckTimer;
-    private bool updateAvailable = false;
+    // Minimalist Footer Bar
+    private Label lblFooterStatus;
 
+    private string currentRole = "receiver";
+    private string currentTransportMode = "internet";
+    private string currentEdge = "right";
     private System.Windows.Forms.Timer pollTimer;
+    private System.Windows.Forms.Timer gitCheckTimer;
     private string baseDir;
 
     public MwbDesktopAppForm() {
         baseDir = AppDomain.CurrentDomain.BaseDirectory;
-        this.Text = "Mouse Without Borders — Native Desktop App (LAN & Encrypted Internet)";
-        this.Size = new Size(920, 680);
-        this.MinimumSize = new Size(880, 640);
+        this.Text = "OneDesk";
+        this.Size = new Size(560, 620);
+        this.MinimumSize = new Size(560, 620);
+        this.MaximumSize = new Size(560, 620);
+        this.FormBorderStyle = FormBorderStyle.FixedSingle;
+        this.MaximizeBox = false;
         this.StartPosition = FormStartPosition.CenterScreen;
-        this.BackColor = Color.FromArgb(15, 23, 42);
-        this.ForeColor = Color.FromArgb(248, 250, 252);
-        this.Font = new Font("Segoe UI", 9.5f, FontStyle.Regular);
+        this.BackColor = BgRoot;
+        this.ForeColor = TextPrimary;
+        this.Font = new Font("Segoe UI", 9f, FontStyle.Regular);
+
+        // Enable native Windows 11 dark titlebar
+        try {
+            int useDark = 1;
+            DwmSetWindowAttribute(this.Handle, 20, ref useDark, sizeof(int));
+        } catch {}
 
         string iconPath = Path.Combine(baseDir, "chrome-extension", "icons", "icon128.png");
         if (File.Exists(iconPath)) {
@@ -72,251 +244,311 @@ public class MwbDesktopAppForm : Form {
         BuildTrayIcon();
         EnsureBackendServiceRunning();
 
-        pollTimer = new System.Windows.Forms.Timer();
-        pollTimer.Interval = 2000;
+        pollTimer = new System.Windows.Forms.Timer { Interval = 2000 };
         pollTimer.Tick += (s, e) => RefreshServiceTelemetry();
         pollTimer.Start();
         RefreshServiceTelemetry();
 
-        gitCheckTimer = new System.Windows.Forms.Timer();
-        gitCheckTimer.Interval = 45000; // Check GitHub for new commits every 45 seconds
-        gitCheckTimer.Tick += (s, e) => CheckForGitHubUpdatesAsync(false);
+        gitCheckTimer = new System.Windows.Forms.Timer { Interval = 45000 };
+        gitCheckTimer.Tick += (s, e) => CheckForGitHubUpdatesAsync();
         gitCheckTimer.Start();
-        CheckForGitHubUpdatesAsync(false);
+        CheckForGitHubUpdatesAsync();
+    }
+
+    private Button CreateFlatButton(string text, Point loc, Size size, Color bg, Color fg, Color borderCol) {
+        Button b = new Button {
+            Text = text,
+            Location = loc,
+            Size = size,
+            BackColor = bg,
+            ForeColor = fg,
+            FlatStyle = FlatStyle.Flat,
+            Font = new Font("Segoe UI Semibold", 8.8f, FontStyle.Bold),
+            Cursor = Cursors.Hand
+        };
+        b.FlatAppearance.BorderColor = borderCol;
+        b.FlatAppearance.BorderSize = borderCol == Color.Empty ? 0 : 1;
+        b.FlatAppearance.MouseOverBackColor = ControlPaint.Light(bg, 0.08f);
+        return b;
     }
 
     private void BuildUI() {
-        // Top Header Bar
-        Panel header = new Panel {
+        // 1. Minimalist Top Bar
+        Panel topBar = new Panel {
             Dock = DockStyle.Top,
-            Height = 62,
-            BackColor = Color.FromArgb(30, 41, 59),
-            Padding = new Padding(18, 12, 18, 12)
+            Height = 56,
+            BackColor = BgRoot
         };
 
-        Label title = new Label {
-            Text = "🖱️ Mouse Without Borders — Native Desktop Software",
-            Font = new Font("Segoe UI", 13f, FontStyle.Bold),
-            ForeColor = Color.White,
+        Label brand = new Label {
+            Text = "ONEDESK",
+            Font = new Font("Segoe UI", 11.5f, FontStyle.Bold),
+            ForeColor = TextPrimary,
             AutoSize = true,
-            Location = new Point(18, 10)
+            Location = new Point(24, 18)
         };
 
-        serviceDetailLabel = new Label {
-            Text = "Native OS Input Hooks (WH_MOUSE_LL + WH_KEYBOARD_LL) • AES-256-GCM Encrypted Relay",
-            Font = new Font("Segoe UI", 8.5f, FontStyle.Regular),
-            ForeColor = Color.FromArgb(148, 163, 184),
-            AutoSize = true,
-            Location = new Point(20, 36)
-        };
-
-        statusBadge = new Label {
-            Text = "Starting Service...",
+        lblStatusDot = new Label {
+            Text = "●",
             Font = new Font("Segoe UI", 9f, FontStyle.Bold),
-            ForeColor = Color.FromArgb(56, 189, 248),
-            BackColor = Color.FromArgb(15, 23, 42),
+            ForeColor = AccentEmerald,
             AutoSize = true,
-            Padding = new Padding(10, 5, 10, 5),
-            Location = new Point(620, 16)
+            Location = new Point(112, 20)
         };
 
-        btnAutoUpdate = new Button {
-            Text = "🔄 Auto-Update (GitHub)",
-            Font = new Font("Segoe UI", 8.5f, FontStyle.Bold),
-            BackColor = Color.FromArgb(14, 165, 233),
-            ForeColor = Color.FromArgb(15, 23, 42),
-            FlatStyle = FlatStyle.Flat,
-            Size = new Size(175, 32),
-            Location = new Point(515, 15),
-            Anchor = AnchorStyles.Top | AnchorStyles.Right
+        lblStatusText = new Label {
+            Text = "OS HOOKS READY",
+            Font = new Font("Consolas", 8f, FontStyle.Regular),
+            ForeColor = TextMuted,
+            AutoSize = true,
+            Location = new Point(128, 22)
         };
-        btnAutoUpdate.FlatAppearance.BorderSize = 0;
+
+        btnAutoUpdate = CreateFlatButton(
+            "GIT SYNC",
+            new Point(414, 14),
+            new Size(106, 28),
+            BgSurface,
+            TextMuted,
+            BorderSubtle
+        );
+        btnAutoUpdate.Font = new Font("Consolas", 8f, FontStyle.Bold);
         btnAutoUpdate.Click += (s, e) => TriggerGitHubAutoUpdate();
 
-        Button btnOpenFullDashboard = new Button {
-            Text = "Open Advanced Telemetry UI",
-            Font = new Font("Segoe UI", 8.5f, FontStyle.Bold),
-            BackColor = Color.FromArgb(51, 65, 85),
-            ForeColor = Color.White,
-            FlatStyle = FlatStyle.Flat,
-            Size = new Size(190, 32),
-            Location = new Point(700, 15),
-            Anchor = AnchorStyles.Top | AnchorStyles.Right
-        };
-        btnOpenFullDashboard.FlatAppearance.BorderSize = 0;
-        btnOpenFullDashboard.Click += (s, e) => OpenFullWorkspaceWindow();
+        topBar.Controls.AddRange(new Control[] { brand, lblStatusDot, lblStatusText, btnAutoUpdate });
+        this.Controls.Add(topBar);
 
-        header.Controls.Add(title);
-        header.Controls.Add(serviceDetailLabel);
-        header.Controls.Add(btnAutoUpdate);
-        header.Controls.Add(btnOpenFullDashboard);
-        this.Controls.Add(header);
-
-        // Role Selector Bar
-        Panel roleBar = new Panel {
-            Location = new Point(18, 74),
-            Size = new Size(865, 48),
-            BackColor = Color.FromArgb(30, 41, 59),
-            Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right
+        // 2. Clean Segmented Role Switcher
+        Panel roleContainer = new Panel {
+            Location = new Point(24, 60),
+            Size = new Size(496, 40),
+            BackColor = BgSurface
         };
 
-        Label lblRole = new Label {
-            Text = "1. Select This Computer's Role:",
-            Font = new Font("Segoe UI", 10f, FontStyle.Bold),
-            ForeColor = Color.FromArgb(56, 189, 248),
-            AutoSize = true,
-            Location = new Point(14, 13)
+        btnTabReceiver = CreateFlatButton(
+            "RECEIVER  (SHARE SCREEN)",
+            new Point(0, 0),
+            new Size(248, 38),
+            BgSurface,
+            TextPrimary,
+            Color.Empty
+        );
+        btnTabController = CreateFlatButton(
+            "CONTROLLER  (SEND INPUT)",
+            new Point(248, 0),
+            new Size(248, 38),
+            BgSurface,
+            TextMuted,
+            Color.Empty
+        );
+
+        tabIndicator = new Panel {
+            Location = new Point(0, 38),
+            Size = new Size(248, 2),
+            BackColor = AccentAmber
         };
 
-        radioReceiver = new RadioButton {
-            Text = "🖥️ Receiver PC (Accepts Mouse & Keyboard Control)",
-            Font = new Font("Segoe UI", 9.5f, FontStyle.Bold),
-            ForeColor = Color.White,
-            AutoSize = true,
-            Location = new Point(250, 12),
-            Checked = true
+        btnTabReceiver.Click += (s, e) => SwitchRole("receiver");
+        btnTabController.Click += (s, e) => SwitchRole("controller");
+
+        roleContainer.Controls.AddRange(new Control[] { btnTabReceiver, btnTabController, tabIndicator });
+        this.Controls.Add(roleContainer);
+
+        // 3. Interactive Visual Display Canvas (Top Middle)
+        monitorCanvas = new MonitorCanvasPanel {
+            Location = new Point(24, 112),
+            Size = new Size(496, 168)
         };
-
-        radioController = new RadioButton {
-            Text = "🖱️ Controller PC (Has Physical Mouse & Keyboard)",
-            Font = new Font("Segoe UI", 9.5f, FontStyle.Bold),
-            ForeColor = Color.White,
-            AutoSize = true,
-            Location = new Point(585, 12)
+        monitorCanvas.OnEdgeChanged += (edge) => {
+            SetEdgeSelection(edge, true);
         };
+        this.Controls.Add(monitorCanvas);
 
-        radioReceiver.CheckedChanged += (s, e) => UpdateRolePanels();
-        radioController.CheckedChanged += (s, e) => UpdateRolePanels();
+        // 4. Compact Edge Pill Selector Row
+        string[] edgeKeys = new string[] { "left", "right", "top", "bottom" };
+        string[] edgeLabels = new string[] { "← LEFT SEAM", "RIGHT SEAM →", "↑ TOP SEAM", "↓ BOTTOM SEAM" };
+        for (int i = 0; i < 4; i++) {
+            string k = edgeKeys[i];
+            Button eb = CreateFlatButton(
+                edgeLabels[i],
+                new Point(24 + i * 126, 288),
+                new Size(118, 28),
+                BgSurface,
+                k == "right" ? AccentAmber : TextMuted,
+                k == "right" ? AccentAmber : BorderSubtle
+            );
+            eb.Font = new Font("Consolas", 7.8f, FontStyle.Bold);
+            eb.Tag = k;
+            eb.Click += (s, e) => SetEdgeSelection((string)((Button)s).Tag, true);
+            edgeButtons[i] = eb;
+            this.Controls.Add(eb);
+        }
 
-        roleBar.Controls.Add(lblRole);
-        roleBar.Controls.Add(radioReceiver);
-        roleBar.Controls.Add(radioController);
-        this.Controls.Add(roleBar);
-
-        // Left Configuration Card (Receiver + Controller Panels)
+        // 5A. Receiver Panel (Minimalist Session Credentials Card)
         receiverPanel = new Panel {
-            Location = new Point(18, 132),
-            Size = new Size(440, 290),
-            BackColor = Color.FromArgb(30, 41, 59)
+            Location = new Point(24, 328),
+            Size = new Size(496, 206),
+            BackColor = BgSurface
         };
-
-        Label rTitle = new Label {
-            Text = "🖥️ Receiver Mode — Share Session Link & PIN",
-            Font = new Font("Segoe UI", 10.5f, FontStyle.Bold),
-            ForeColor = Color.FromArgb(34, 197, 94),
-            AutoSize = true,
-            Location = new Point(16, 14)
-        };
-
-        Label rSub = new Label {
-            Text = "Copy the Session Link and 6-digit Pairing PIN below and paste them into the Controller PC app (works across any Wi-Fi or Internet network).",
-            ForeColor = Color.FromArgb(148, 163, 184),
-            Size = new Size(408, 38),
-            Location = new Point(16, 38)
-        };
-
-        Label lblLink = new Label { Text = "Internet Session Link:", Location = new Point(16, 84), AutoSize = true };
-        txtSessionLink = new TextBox {
-            Location = new Point(16, 106),
-            Size = new Size(270, 26),
-            ReadOnly = true,
-            BackColor = Color.FromArgb(11, 17, 32),
-            ForeColor = Color.FromArgb(56, 189, 248),
-            Font = new Font("Consolas", 10.5f, FontStyle.Bold)
-        };
-
-        Label lblPin = new Label { Text = "6-Digit PIN:", Location = new Point(298, 84), AutoSize = true };
-        txtSessionPin = new TextBox {
-            Location = new Point(298, 106),
-            Size = new Size(124, 26),
-            ReadOnly = true,
-            BackColor = Color.FromArgb(11, 17, 32),
-            ForeColor = Color.FromArgb(34, 197, 94),
-            Font = new Font("Consolas", 10.5f, FontStyle.Bold)
-        };
-
-        btnCopySession = new Button {
-            Text = "📋 Copy Link + PIN",
-            BackColor = Color.FromArgb(56, 189, 248),
-            ForeColor = Color.FromArgb(15, 23, 42),
-            Font = new Font("Segoe UI", 9.5f, FontStyle.Bold),
-            FlatStyle = FlatStyle.Flat,
-            Location = new Point(16, 144),
-            Size = new Size(200, 36)
-        };
-        btnCopySession.FlatAppearance.BorderSize = 0;
-        btnCopySession.Click += (s, e) => {
-            if (!string.IsNullOrEmpty(txtSessionLink.Text)) {
-                Clipboard.SetText(txtSessionLink.Text + " (PIN: " + txtSessionPin.Text + ")");
-                AppendLog("Copied Session Link & PIN to Clipboard.");
+        receiverPanel.Paint += (s, e) => {
+            using (Pen p = new Pen(BorderSubtle, 1f)) {
+                e.Graphics.DrawRectangle(p, 0, 0, receiverPanel.Width - 1, receiverPanel.Height - 1);
             }
         };
 
-        btnNewSession = new Button {
-            Text = "🔄 New Session & PIN",
-            BackColor = Color.FromArgb(51, 65, 85),
-            ForeColor = Color.White,
-            Font = new Font("Segoe UI", 9f, FontStyle.Bold),
-            FlatStyle = FlatStyle.Flat,
-            Location = new Point(226, 144),
-            Size = new Size(196, 36)
-        };
-        btnNewSession.FlatAppearance.BorderSize = 0;
-        btnNewSession.Click += (s, e) => RegenerateSessionLink();
-
-        Label lblLan = new Label { Text = "Direct Local LAN Address (Same Wi-Fi):", Location = new Point(16, 196), AutoSize = true };
-        txtLanLink = new TextBox {
-            Location = new Point(16, 218),
-            Size = new Size(406, 26),
-            ReadOnly = true,
-            BackColor = Color.FromArgb(11, 17, 32),
-            ForeColor = Color.FromArgb(203, 213, 225),
-            Font = new Font("Consolas", 10f, FontStyle.Regular)
-        };
-
-        receiverPanel.Controls.AddRange(new Control[] {
-            rTitle, rSub, lblLink, txtSessionLink, lblPin, txtSessionPin, btnCopySession, btnNewSession, lblLan, txtLanLink
-        });
-        this.Controls.Add(receiverPanel);
-
-        // Controller Panel
-        controllerPanel = new Panel {
-            Location = new Point(18, 132),
-            Size = new Size(440, 290),
-            BackColor = Color.FromArgb(30, 41, 59),
-            Visible = false
-        };
-
-        Label cTitle = new Label {
-            Text = "🖱️ Controller Mode — Connect to Receiver PC",
-            Font = new Font("Segoe UI", 10.5f, FontStyle.Bold),
-            ForeColor = Color.FromArgb(56, 189, 248),
-            AutoSize = true,
-            Location = new Point(16, 12)
-        };
-
-        radioModeInternet = new RadioButton {
-            Text = "🌐 Online Internet Relay (E2EE)",
-            Location = new Point(16, 40),
-            AutoSize = true,
-            Checked = true
-        };
-        radioModeLan = new RadioButton {
-            Text = "🏠 Local Network (LAN IP)",
-            Location = new Point(235, 40),
+        Label lblRecHeader = new Label {
+            Text = "SESSION CREDENTIALS",
+            Font = new Font("Consolas", 8f, FontStyle.Bold),
+            ForeColor = TextMuted,
+            Location = new Point(20, 18),
             AutoSize = true
         };
 
-        Label lblTarget = new Label { Text = "Receiver Session Link (mwb://...) or LAN IP:", Location = new Point(16, 68), AutoSize = true };
+        Label lblSessionId = new Label {
+            Text = "Session Endpoint",
+            Font = new Font("Segoe UI", 8.5f),
+            ForeColor = TextMuted,
+            Location = new Point(20, 44),
+            AutoSize = true
+        };
+
+        txtSessionLink = new TextBox {
+            Location = new Point(20, 66),
+            Size = new Size(318, 28),
+            ReadOnly = true,
+            BorderStyle = BorderStyle.FixedSingle,
+            BackColor = BgInput,
+            ForeColor = TextPrimary,
+            Font = new Font("Consolas", 10.5f, FontStyle.Bold)
+        };
+
+        Label lblPinTitle = new Label {
+            Text = "Pairing Key",
+            Font = new Font("Segoe UI", 8.5f),
+            ForeColor = TextMuted,
+            Location = new Point(352, 44),
+            AutoSize = true
+        };
+
+        txtSessionPin = new TextBox {
+            Location = new Point(352, 66),
+            Size = new Size(124, 28),
+            ReadOnly = true,
+            BorderStyle = BorderStyle.FixedSingle,
+            BackColor = BgInput,
+            ForeColor = AccentAmber,
+            TextAlign = HorizontalAlignment.Center,
+            Font = new Font("Consolas", 10.5f, FontStyle.Bold)
+        };
+
+        btnCopySession = CreateFlatButton(
+            "COPY PAIRING KEY",
+            new Point(20, 110),
+            new Size(318, 38),
+            AccentAmber,
+            Color.FromArgb(10, 10, 12),
+            Color.Empty
+        );
+        btnCopySession.Click += (s, e) => {
+            if (!string.IsNullOrEmpty(txtSessionLink.Text)) {
+                Clipboard.SetText(txtSessionLink.Text + " (PIN: " + txtSessionPin.Text + ")");
+                btnCopySession.Text = "COPIED TO CLIPBOARD";
+                SetFooter("Copied session endpoint & 6-digit pairing key.");
+                System.Windows.Forms.Timer t = new System.Windows.Forms.Timer { Interval = 1500 };
+                t.Tick += (ts, te) => {
+                    btnCopySession.Text = "COPY PAIRING KEY";
+                    t.Stop();
+                    t.Dispose();
+                };
+                t.Start();
+            }
+        };
+
+        btnNewSession = CreateFlatButton(
+            "ROTATE KEY",
+            new Point(352, 110),
+            new Size(124, 38),
+            BgInput,
+            TextPrimary,
+            BorderSubtle
+        );
+        btnNewSession.Click += (s, e) => RegenerateSessionLink();
+
+        lblLanHint = new Label {
+            Text = "LAN DIRECT  ·  ws://127.0.0.1:8765",
+            Font = new Font("Consolas", 8f),
+            ForeColor = TextMuted,
+            Location = new Point(20, 166),
+            AutoSize = true
+        };
+
+        receiverPanel.Controls.AddRange(new Control[] {
+            lblRecHeader, lblSessionId, txtSessionLink, lblPinTitle, txtSessionPin,
+            btnCopySession, btnNewSession, lblLanHint
+        });
+        this.Controls.Add(receiverPanel);
+
+        // 5B. Controller Panel (Minimalist Pairing & OS Hook Card)
+        controllerPanel = new Panel {
+            Location = new Point(24, 328),
+            Size = new Size(496, 206),
+            BackColor = BgSurface,
+            Visible = false
+        };
+        controllerPanel.Paint += (s, e) => {
+            using (Pen p = new Pen(BorderSubtle, 1f)) {
+                e.Graphics.DrawRectangle(p, 0, 0, controllerPanel.Width - 1, controllerPanel.Height - 1);
+            }
+        };
+
+        Label lblCtrlHeader = new Label {
+            Text = "TARGET CONNECTION",
+            Font = new Font("Consolas", 8f, FontStyle.Bold),
+            ForeColor = TextMuted,
+            Location = new Point(20, 16),
+            AutoSize = true
+        };
+
+        btnModeCloud = CreateFlatButton(
+            "CLOUD RELAY",
+            new Point(310, 12),
+            new Size(82, 22),
+            BgInput,
+            AccentAmber,
+            AccentAmber
+        );
+        btnModeCloud.Font = new Font("Consolas", 7.2f, FontStyle.Bold);
+
+        btnModeLan = CreateFlatButton(
+            "DIRECT LAN",
+            new Point(396, 12),
+            new Size(80, 22),
+            BgInput,
+            TextMuted,
+            BorderSubtle
+        );
+        btnModeLan.Font = new Font("Consolas", 7.2f, FontStyle.Bold);
+
+        btnModeCloud.Click += (s, e) => SetTransportMode("internet");
+        btnModeLan.Click += (s, e) => SetTransportMode("lan");
+
+        Label lblTargetEndpoint = new Label {
+            Text = "Remote Session Endpoint or IP",
+            Font = new Font("Segoe UI", 8.5f),
+            ForeColor = TextMuted,
+            Location = new Point(20, 42),
+            AutoSize = true
+        };
+
         txtTargetLink = new TextBox {
-            Location = new Point(16, 88),
-            Size = new Size(275, 26),
-            BackColor = Color.FromArgb(11, 17, 32),
-            ForeColor = Color.White,
+            Location = new Point(20, 64),
+            Size = new Size(318, 28),
+            BorderStyle = BorderStyle.FixedSingle,
+            BackColor = BgInput,
+            ForeColor = TextPrimary,
             Font = new Font("Consolas", 10f)
         };
         txtTargetLink.TextChanged += (s, e) => {
-            // If user pasted "mwb://mwb-xxxx (PIN: 123456)", automatically split it into Link and PIN!
             string raw = txtTargetLink.Text;
             int pinIdx = raw.IndexOf("(PIN:", StringComparison.OrdinalIgnoreCase);
             if (pinIdx >= 0) {
@@ -329,183 +561,145 @@ public class MwbDesktopAppForm : Form {
             }
         };
 
-        Label lblTargetPin = new Label { Text = "Pairing PIN:", Location = new Point(302, 68), AutoSize = true };
+        Label lblTargetKey = new Label {
+            Text = "Pairing Key",
+            Font = new Font("Segoe UI", 8.5f),
+            ForeColor = TextMuted,
+            Location = new Point(352, 42),
+            AutoSize = true
+        };
+
         txtTargetPin = new TextBox {
-            Location = new Point(302, 88),
-            Size = new Size(120, 26),
-            BackColor = Color.FromArgb(11, 17, 32),
-            ForeColor = Color.FromArgb(34, 197, 94),
+            Location = new Point(352, 64),
+            Size = new Size(124, 28),
+            BorderStyle = BorderStyle.FixedSingle,
+            BackColor = BgInput,
+            ForeColor = AccentAmber,
+            TextAlign = HorizontalAlignment.Center,
             Font = new Font("Consolas", 10f, FontStyle.Bold)
         };
 
-        Label lblEdge = new Label { Text = "Where is the 2nd Computer's Screen Located?", Location = new Point(16, 122), AutoSize = true };
-        cmbEdge = new ComboBox {
-            Location = new Point(16, 142),
-            Size = new Size(406, 28),
-            DropDownStyle = ComboBoxStyle.DropDownList,
-            BackColor = Color.FromArgb(11, 17, 32),
-            ForeColor = Color.White
-        };
-        cmbEdge.Items.AddRange(new object[] {
-            "right — Right Edge of This Screen",
-            "left — Left Edge of This Screen",
-            "top — Top Edge of This Screen",
-            "bottom — Bottom Edge of This Screen"
-        });
-        cmbEdge.SelectedIndex = 0;
-        cmbEdge.SelectedIndexChanged += (s, e) => UpdateMonitorMapLayout();
-
         chkOsHooks = new CheckBox {
-            Text = "Enable Global OS Screen-Edge Capture (Works Outside Browser)",
-            Location = new Point(16, 178),
+            Text = "OS Edge Capture",
+            Location = new Point(20, 102),
             AutoSize = true,
             Checked = true,
-            ForeColor = Color.FromArgb(34, 197, 94)
+            ForeColor = TextPrimary,
+            Font = new Font("Segoe UI", 8.5f)
         };
 
         chkClipboard = new CheckBox {
-            Text = "Synchronize OS Clipboard Text Between Computers",
-            Location = new Point(16, 202),
+            Text = "Shared Clipboard",
+            Location = new Point(165, 102),
             AutoSize = true,
-            Checked = true
+            Checked = true,
+            ForeColor = TextPrimary,
+            Font = new Font("Segoe UI", 8.5f)
         };
 
-        btnConnect = new Button {
-            Text = "⚡ Pair & Enable Edge Control",
-            BackColor = Color.FromArgb(34, 197, 94),
-            ForeColor = Color.FromArgb(15, 23, 42),
-            Font = new Font("Segoe UI", 9.5f, FontStyle.Bold),
-            FlatStyle = FlatStyle.Flat,
-            Location = new Point(16, 236),
-            Size = new Size(255, 38)
+        Label lblEscHint = new Label {
+            Text = "ESC / Ctrl+Alt+Q returns cursor",
+            Location = new Point(310, 104),
+            AutoSize = true,
+            ForeColor = TextMuted,
+            Font = new Font("Consolas", 7.5f)
         };
-        btnConnect.FlatAppearance.BorderSize = 0;
+
+        btnConnect = CreateFlatButton(
+            "LINK & ARM EDGE",
+            new Point(20, 136),
+            new Size(318, 38),
+            AccentEmerald,
+            Color.FromArgb(10, 10, 12),
+            Color.Empty
+        );
         btnConnect.Click += (s, e) => ConnectFromNativeDesktop();
 
-        btnDisconnect = new Button {
-            Text = "Stop / Release",
-            BackColor = Color.FromArgb(239, 68, 68),
-            ForeColor = Color.White,
-            Font = new Font("Segoe UI", 9f, FontStyle.Bold),
-            FlatStyle = FlatStyle.Flat,
-            Location = new Point(282, 236),
-            Size = new Size(140, 38)
-        };
-        btnDisconnect.FlatAppearance.BorderSize = 0;
+        btnDisconnect = CreateFlatButton(
+            "DISCONNECT",
+            new Point(352, 136),
+            new Size(124, 38),
+            BgInput,
+            TextMuted,
+            BorderSubtle
+        );
         btnDisconnect.Click += (s, e) => DisconnectFromNativeDesktop();
 
         controllerPanel.Controls.AddRange(new Control[] {
-            cTitle, radioModeInternet, radioModeLan, lblTarget, txtTargetLink, lblTargetPin, txtTargetPin,
-            lblEdge, cmbEdge, chkOsHooks, chkClipboard, btnConnect, btnDisconnect
+            lblCtrlHeader, btnModeCloud, btnModeLan, lblTargetEndpoint, txtTargetLink,
+            lblTargetKey, txtTargetPin, chkOsHooks, chkClipboard, lblEscHint, btnConnect, btnDisconnect
         });
         this.Controls.Add(controllerPanel);
 
-        // Right Panel: Visual Screen Arrangement Map
-        monitorStage = new Panel {
-            Location = new Point(472, 132),
-            Size = new Size(411, 290),
-            BackColor = Color.FromArgb(30, 41, 59),
-            Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right
+        // 6. Single-Line Minimalist Status Footer
+        lblFooterStatus = new Label {
+            Text = "AES-256-GCM END-TO-END ENCRYPTED  ·  READY",
+            Font = new Font("Consolas", 8f),
+            ForeColor = TextMuted,
+            Location = new Point(24, 548),
+            Size = new Size(496, 20),
+            TextAlign = ContentAlignment.MiddleLeft
         };
+        this.Controls.Add(lblFooterStatus);
+    }
 
-        Label mTitle = new Label {
-            Text = "🖥️ Screen Edge Arrangement & Status",
-            Font = new Font("Segoe UI", 10.5f, FontStyle.Bold),
-            ForeColor = Color.White,
-            Location = new Point(16, 14),
-            AutoSize = true
-        };
+    private void SwitchRole(string role) {
+        currentRole = role;
+        bool isRec = (role == "receiver");
+        receiverPanel.Visible = isRec;
+        controllerPanel.Visible = !isRec;
 
-        boxMonitor1 = new Panel {
-            Size = new Size(165, 105),
-            Location = new Point(30, 85),
-            BackColor = Color.FromArgb(11, 17, 32),
-            BorderStyle = BorderStyle.FixedSingle
-        };
-        lblMonitor1 = new Label {
-            Text = "Monitor 1\n(This Computer)\nActive",
-            TextAlign = ContentAlignment.MiddleCenter,
-            Dock = DockStyle.Fill,
-            ForeColor = Color.FromArgb(56, 189, 248),
-            Font = new Font("Segoe UI", 9f, FontStyle.Bold)
-        };
-        boxMonitor1.Controls.Add(lblMonitor1);
+        btnTabReceiver.ForeColor = isRec ? TextPrimary : TextMuted;
+        btnTabController.ForeColor = !isRec ? TextPrimary : TextMuted;
+        tabIndicator.Location = new Point(isRec ? 0 : 248, 38);
+    }
 
-        boxMonitor2 = new Panel {
-            Size = new Size(165, 105),
-            Location = new Point(215, 85),
-            BackColor = Color.FromArgb(11, 17, 32),
-            BorderStyle = BorderStyle.FixedSingle
-        };
-        lblMonitor2 = new Label {
-            Text = "Monitor 2\n(Remote PC)\nRight Edge ➡️",
-            TextAlign = ContentAlignment.MiddleCenter,
-            Dock = DockStyle.Fill,
-            ForeColor = Color.FromArgb(34, 197, 94),
-            Font = new Font("Segoe UI", 9f, FontStyle.Bold)
-        };
-        boxMonitor2.Controls.Add(lblMonitor2);
+    private void SetTransportMode(string mode) {
+        currentTransportMode = mode;
+        bool isCloud = (mode == "internet");
+        btnModeCloud.ForeColor = isCloud ? AccentAmber : TextMuted;
+        btnModeCloud.FlatAppearance.BorderColor = isCloud ? AccentAmber : BorderSubtle;
+        btnModeLan.ForeColor = !isCloud ? AccentAmber : TextMuted;
+        btnModeLan.FlatAppearance.BorderColor = !isCloud ? AccentAmber : BorderSubtle;
+    }
 
-        Label lblHotkeyHint = new Label {
-            Text = "Tip: Move your physical mouse pointer across the configured screen border to control the 2nd computer. Press Ctrl + Alt + Q anytime to return immediately.",
-            ForeColor = Color.FromArgb(148, 163, 184),
-            Font = new Font("Segoe UI", 8.5f),
-            Location = new Point(16, 225),
-            Size = new Size(380, 52)
-        };
+    private void SetEdgeSelection(string edge, bool notifyBackend) {
+        currentEdge = edge;
+        monitorCanvas.EdgePosition = edge;
+        monitorCanvas.Invalidate();
 
-        monitorStage.Controls.AddRange(new Control[] { mTitle, boxMonitor1, boxMonitor2, lblHotkeyHint });
-        this.Controls.Add(monitorStage);
+        for (int i = 0; i < edgeButtons.Length; i++) {
+            bool active = ((string)edgeButtons[i].Tag == edge);
+            edgeButtons[i].ForeColor = active ? AccentAmber : TextMuted;
+            edgeButtons[i].FlatAppearance.BorderColor = active ? AccentAmber : BorderSubtle;
+        }
 
-        // Bottom Event & Security Telemetry Log
-        Panel logPanel = new Panel {
-            Location = new Point(18, 434),
-            Size = new Size(865, 190),
-            BackColor = Color.FromArgb(30, 41, 59),
-            Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right
-        };
+        if (notifyBackend) {
+            SetFooter("Active screen seam set to " + edge.ToUpper() + " edge.");
+        }
+    }
 
-        Label lblLog = new Label {
-            Text = "Live OS Hook, Pairing & Encrypted Transport Telemetry:",
-            Font = new Font("Segoe UI", 9.5f, FontStyle.Bold),
-            ForeColor = Color.FromArgb(148, 163, 184),
-            Location = new Point(14, 10),
-            AutoSize = true
-        };
-
-        txtLog = new TextBox {
-            Location = new Point(14, 34),
-            Size = new Size(837, 142),
-            Multiline = true,
-            ReadOnly = true,
-            ScrollBars = ScrollBars.Vertical,
-            BackColor = Color.FromArgb(11, 17, 32),
-            ForeColor = Color.FromArgb(203, 213, 225),
-            Font = new Font("Consolas", 9f),
-            Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right
-        };
-
-        logPanel.Controls.Add(lblLog);
-        logPanel.Controls.Add(txtLog);
-        this.Controls.Add(logPanel);
+    private void SetFooter(string text) {
+        if (lblFooterStatus.InvokeRequired) {
+            lblFooterStatus.BeginInvoke((MethodInvoker)delegate { SetFooter(text); });
+            return;
+        }
+        lblFooterStatus.Text = text.ToUpper();
     }
 
     private void BuildTrayIcon() {
         trayMenu = new ContextMenuStrip();
-        trayMenu.Items.Add("Show Mouse Without Borders", null, (s, e) => {
+        trayMenu.Items.Add("Open OneDesk", null, (s, e) => {
             this.Show();
             this.WindowState = FormWindowState.Normal;
             this.Activate();
         });
-        trayMenu.Items.Add("🔄 Auto-Update from GitHub (OneDesk)", null, (s, e) => TriggerGitHubAutoUpdate());
-        trayMenu.Items.Add("Open Full Telemetry UI", null, (s, e) => OpenFullWorkspaceWindow());
+        trayMenu.Items.Add("Sync Update from GitHub", null, (s, e) => TriggerGitHubAutoUpdate());
         trayMenu.Items.Add("-");
-        trayMenu.Items.Add("Exit Application", null, (s, e) => {
-            CleanupAndExit();
-        });
+        trayMenu.Items.Add("Quit", null, (s, e) => CleanupAndExit());
 
         trayIcon = new NotifyIcon {
-            Text = "Mouse Without Borders — Native Desktop App",
+            Text = "OneDesk — Seamless Multi-PC Input",
             Icon = this.Icon ?? SystemIcons.Application,
             ContextMenuStrip = trayMenu,
             Visible = true
@@ -517,60 +711,12 @@ public class MwbDesktopAppForm : Form {
         };
     }
 
-    private void UpdateRolePanels() {
-        receiverPanel.Visible = radioReceiver.Checked;
-        controllerPanel.Visible = radioController.Checked;
-    }
-
-    private string GetSelectedEdge() {
-        string raw = (cmbEdge.SelectedItem ?? "right").ToString();
-        return raw.Split(' ')[0].Trim();
-    }
-
-    private void UpdateMonitorMapLayout() {
-        string edge = GetSelectedEdge();
-        if (edge == "right") {
-            boxMonitor1.Location = new Point(30, 85);
-            boxMonitor2.Location = new Point(215, 85);
-            lblMonitor2.Text = "Monitor 2\n(Remote PC)\nRight Edge ➡️";
-        } else if (edge == "left") {
-            boxMonitor2.Location = new Point(30, 85);
-            boxMonitor1.Location = new Point(215, 85);
-            lblMonitor2.Text = "Monitor 2\n(Remote PC)\n⬅️ Left Edge";
-        } else if (edge == "top") {
-            boxMonitor2.Size = new Size(180, 75);
-            boxMonitor1.Size = new Size(180, 75);
-            boxMonitor2.Location = new Point(115, 45);
-            boxMonitor1.Location = new Point(115, 130);
-            lblMonitor2.Text = "Monitor 2 (Remote PC) ⬆️ Top Edge";
-        } else if (edge == "bottom") {
-            boxMonitor1.Size = new Size(180, 75);
-            boxMonitor2.Size = new Size(180, 75);
-            boxMonitor1.Location = new Point(115, 45);
-            boxMonitor2.Location = new Point(115, 130);
-            lblMonitor2.Text = "Monitor 2 (Remote PC) ⬇️ Bottom Edge";
-        }
-        if (edge == "left" || edge == "right") {
-            boxMonitor1.Size = new Size(165, 105);
-            boxMonitor2.Size = new Size(165, 105);
-        }
-    }
-
-    private void AppendLog(string msg) {
-        if (txtLog.InvokeRequired) {
-            txtLog.BeginInvoke((MethodInvoker)delegate { AppendLog(msg); });
-            return;
-        }
-        string line = "[" + DateTime.Now.ToString("HH:mm:ss") + "] " + msg + Environment.NewLine;
-        txtLog.AppendText(line);
-    }
-
     private void EnsureBackendServiceRunning() {
         try {
             using (var wc = new System.Net.WebClient()) {
                 string info = wc.DownloadString("http://127.0.0.1:8765/info");
                 if (!string.IsNullOrEmpty(info)) {
-                    AppendLog("Connected to running Native OS Input & Relay Service on port 8765.");
+                    SetFooter("Connected to local OS input service (127.0.0.1:8765)");
                     return;
                 }
             }
@@ -581,7 +727,7 @@ public class MwbDesktopAppForm : Form {
             serverScript = Path.Combine(baseDir, "server.js");
         }
         if (!File.Exists(serverScript)) {
-            AppendLog("ERROR: Could not find host-server/server.js");
+            SetFooter("Error: host-server/server.js not found");
             return;
         }
 
@@ -591,19 +737,12 @@ public class MwbDesktopAppForm : Form {
                 Arguments = "\"" + serverScript + "\"",
                 WorkingDirectory = Path.GetDirectoryName(serverScript),
                 UseShellExecute = false,
-                CreateNoWindow = true,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true
+                CreateNoWindow = true
             };
-            serverProcess = new Process { StartInfo = psi, EnableRaisingEvents = true };
-            serverProcess.OutputDataReceived += (s, e) => {
-                if (!string.IsNullOrEmpty(e.Data)) AppendLog(e.Data);
-            };
-            serverProcess.Start();
-            serverProcess.BeginOutputReadLine();
-            AppendLog("Started Native Desktop Background Service (server.js + MwbInputDriver.exe).");
+            serverProcess = Process.Start(psi);
+            SetFooter("Native OS input & encrypted relay service started");
         } catch (Exception ex) {
-            AppendLog("Failed to start Node service: " + ex.Message);
+            SetFooter("Service error: " + ex.Message);
         }
     }
 
@@ -625,7 +764,9 @@ public class MwbDesktopAppForm : Form {
                 string pin = ExtractJsonString(json, "pairingPin");
                 string lanUrl = ExtractJsonString(json, "lanWsUrl");
                 string activeScreen = ExtractJsonString(json, "activeScreen");
+                string peerHost = ExtractJsonString(json, "controllerPeerHostname");
                 bool hooksOk = json.Contains("\"osHooksInstalled\":true");
+                bool ctrlConnected = json.Contains("\"controllerConnected\":true");
 
                 if (!string.IsNullOrEmpty(pubUrl) && txtSessionLink.Text != pubUrl) {
                     txtSessionLink.Text = pubUrl;
@@ -634,18 +775,19 @@ public class MwbDesktopAppForm : Form {
                     txtSessionPin.Text = pin;
                 }
                 if (!string.IsNullOrEmpty(lanUrl)) {
-                    txtLanLink.Text = lanUrl;
+                    lblLanHint.Text = "LAN DIRECT  ·  " + lanUrl;
                 }
 
-                serviceDetailLabel.Text = hooksOk
-                    ? "🟢 Native OS Hooks Installed (WH_MOUSE_LL + WH_KEYBOARD_LL) • AES-256-GCM Encrypted Relay Ready"
-                    : "⚠️ Waiting for Native OS Input Driver...";
-
-                if (activeScreen == "host") {
-                    lblMonitor1.Text = "Monitor 1\n(Controller PC)\nCursor Parked";
-                    lblMonitor2.Text = "Monitor 2\n(Receiver PC)\n🟢 ACTIVE INPUT";
+                lblStatusDot.ForeColor = hooksOk ? AccentEmerald : AccentAmber;
+                if (ctrlConnected && !string.IsNullOrEmpty(peerHost)) {
+                    lblStatusText.Text = "LINKED TO " + peerHost.ToUpper();
                 } else {
-                    lblMonitor1.Text = "Monitor 1\n(This Computer)\n🟢 ACTIVE INPUT";
+                    lblStatusText.Text = hooksOk ? "OS HOOKS READY" : "STARTING DRIVER";
+                }
+
+                if (monitorCanvas.ActiveScreen != activeScreen && !string.IsNullOrEmpty(activeScreen)) {
+                    monitorCanvas.ActiveScreen = activeScreen;
+                    monitorCanvas.Invalidate();
                 }
             }
         } catch {}
@@ -655,41 +797,41 @@ public class MwbDesktopAppForm : Form {
         try {
             using (var wc = new System.Net.WebClient()) {
                 wc.DownloadString("http://127.0.0.1:8765/generate-link?force=true");
-                AppendLog("Generated new encrypted Session ID and 6-digit Pairing PIN.");
                 RefreshServiceTelemetry();
+                SetFooter("Rotated session endpoint & 6-digit pairing key");
             }
         } catch (Exception ex) {
-            AppendLog("Error generating link: " + ex.Message);
+            SetFooter("Rotate error: " + ex.Message);
         }
     }
 
     private void ConnectFromNativeDesktop() {
         string target = txtTargetLink.Text.Trim();
         string pin = txtTargetPin.Text.Trim();
-        string edge = GetSelectedEdge();
-        string mode = radioModeLan.Checked ? "lan" : "internet";
 
         if (string.IsNullOrEmpty(target)) {
-            MessageBox.Show("Please enter the Receiver's Session Link (mwb://...) or LAN IP.", "Pairing Required", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            SetFooter("Enter remote session endpoint (mwb://...) or LAN IP first");
+            txtTargetLink.Focus();
             return;
         }
 
         try {
             string url = string.Format(
                 "http://127.0.0.1:8765/native-connect?mode={0}&target={1}&pin={2}&edge={3}&osCapture={4}&clipboard={5}",
-                Uri.EscapeDataString(mode),
+                Uri.EscapeDataString(currentTransportMode),
                 Uri.EscapeDataString(target),
                 Uri.EscapeDataString(pin),
-                Uri.EscapeDataString(edge),
+                Uri.EscapeDataString(currentEdge),
                 chkOsHooks.Checked ? "1" : "0",
                 chkClipboard.Checked ? "1" : "0"
             );
             using (var wc = new System.Net.WebClient()) {
                 wc.DownloadString(url);
             }
-            AppendLog("Paired & armed OS screen-edge transition (" + edge.ToUpper() + " edge) -> " + target);
+            btnConnect.Text = "ARMED  ·  " + currentEdge.ToUpper() + " SEAM";
+            SetFooter("Linked to " + target + " · Move cursor to " + currentEdge + " screen edge");
         } catch (Exception ex) {
-            AppendLog("Connection request failed: " + ex.Message);
+            SetFooter("Link failed: " + ex.Message);
         }
     }
 
@@ -698,7 +840,8 @@ public class MwbDesktopAppForm : Form {
             using (var wc = new System.Net.WebClient()) {
                 wc.DownloadString("http://127.0.0.1:8765/native-disconnect");
             }
-            AppendLog("Stopped remote control and released OS cursor hooks.");
+            btnConnect.Text = "LINK & ARM EDGE";
+            SetFooter("Disconnected & released OS hooks");
         } catch {}
     }
 
@@ -723,7 +866,7 @@ public class MwbDesktopAppForm : Form {
         }
     }
 
-    private void CheckForGitHubUpdatesAsync(bool logIfUpToDate) {
+    private void CheckForGitHubUpdatesAsync() {
         System.Threading.ThreadPool.QueueUserWorkItem((state) => {
             try {
                 RunGitCommand("fetch origin main");
@@ -732,20 +875,17 @@ public class MwbDesktopAppForm : Form {
                 if (!string.IsNullOrEmpty(localSha) && !string.IsNullOrEmpty(remoteSha)) {
                     bool hasNew = (localSha != remoteSha);
                     this.BeginInvoke((MethodInvoker)delegate {
-                        updateAvailable = hasNew;
                         if (hasNew) {
                             string shortSha = remoteSha.Length >= 7 ? remoteSha.Substring(0, 7) : remoteSha;
-                            btnAutoUpdate.Text = "⬇️ Update Ready (" + shortSha + ")";
-                            btnAutoUpdate.BackColor = Color.FromArgb(34, 197, 94);
-                            btnAutoUpdate.ForeColor = Color.FromArgb(15, 23, 42);
-                            AppendLog("🔔 New GitHub update detected on origin/main (" + shortSha + ")! Click 'Update Ready' to install & restart.");
+                            btnAutoUpdate.Text = "UPDATE · " + shortSha;
+                            btnAutoUpdate.ForeColor = AccentEmerald;
+                            btnAutoUpdate.FlatAppearance.BorderColor = AccentEmerald;
+                            SetFooter("New GitHub commit " + shortSha + " available — click UPDATE");
                         } else {
                             string shortSha = localSha.Length >= 7 ? localSha.Substring(0, 7) : localSha;
-                            btnAutoUpdate.Text = "🔄 Auto-Update (" + shortSha + ")";
-                            btnAutoUpdate.BackColor = Color.FromArgb(14, 165, 233);
-                            if (logIfUpToDate) {
-                                AppendLog("✅ Already on latest GitHub commit (" + shortSha + ").");
-                            }
+                            btnAutoUpdate.Text = "SYNC · " + shortSha;
+                            btnAutoUpdate.ForeColor = TextMuted;
+                            btnAutoUpdate.FlatAppearance.BorderColor = BorderSubtle;
                         }
                     });
                 }
@@ -755,38 +895,19 @@ public class MwbDesktopAppForm : Form {
 
     private void TriggerGitHubAutoUpdate() {
         string updaterBat = Path.Combine(baseDir, "update-from-github.bat");
-        if (!File.Exists(updaterBat)) {
-            MessageBox.Show("update-from-github.bat was not found in " + baseDir, "Auto-Update Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
-            return;
-        }
+        if (!File.Exists(updaterBat)) return;
 
-        AppendLog("⬇️ Pulling latest changes from https://github.com/JustNathan25/OneDesk.git, recompiling, and restarting...");
+        SetFooter("Pulling latest commit from GitHub & restarting...");
         try {
             ProcessStartInfo psi = new ProcessStartInfo {
                 FileName = "cmd.exe",
-                Arguments = "/c start \"OneDesk GitHub Auto-Updater\" \"" + updaterBat + "\"",
+                Arguments = "/c start \"OneDesk Updater\" \"" + updaterBat + "\"",
                 WorkingDirectory = baseDir,
                 UseShellExecute = false,
                 CreateNoWindow = true
             };
             Process.Start(psi);
             CleanupAndExit();
-        } catch (Exception ex) {
-            AppendLog("Auto-update launch error: " + ex.Message);
-        }
-    }
-
-    private void OpenFullWorkspaceWindow() {
-        try {
-            string edgePath = @"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe";
-            string chromePath = @"C:\Program Files\Google\Chrome\Application\chrome.exe";
-            if (File.Exists(edgePath)) {
-                Process.Start(edgePath, "--app=http://127.0.0.1:8765 --window-size=1180,760");
-            } else if (File.Exists(chromePath)) {
-                Process.Start(chromePath, "--app=http://127.0.0.1:8765 --window-size=1180,760");
-            } else {
-                Process.Start("http://127.0.0.1:8765");
-            }
         } catch {}
     }
 
