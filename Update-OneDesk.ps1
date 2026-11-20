@@ -1,4 +1,4 @@
-﻿# OneDesk Auto-Updater & Desktop Shortcut Installer (Works WITH or WITHOUT Git installed!)
+# OneDesk Auto-Updater & Desktop Shortcut Installer (Works WITH or WITHOUT Git installed!)
 $ErrorActionPreference = "SilentlyContinue"
 $BaseDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $BaseDir

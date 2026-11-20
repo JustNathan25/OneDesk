@@ -118,6 +118,17 @@ let cloudReady = false;
 const cloudPeers = new Map();
 const pendingApprovals = new Map(); // clientId -> { clientId, peerName, transport, replyFn, authContext, ts }
 let lastConnectionEvent = { status: 'idle', peerName: '', reason: '', ts: 0 };
+const diagnosticLogs = [];
+
+function pushDiagLog(category, text) {
+  const ts = new Date().toTimeString().split(' ')[0];
+  const line = `[${ts}] [${category}] ${text}`;
+  console.log(line);
+  diagnosticLogs.push(line);
+  if (diagnosticLogs.length > 50) {
+    diagnosticLogs.shift();
+  }
+}
 
 // Native Controller Outbound Transport State (when this desktop app acts as Controller)
 let controllerTransport = 'none'; // 'cloud' | 'lan' | 'none'
@@ -654,6 +665,7 @@ function connectNativeController(opts = {}) {
     controllerRoomId = roomId;
     controllerStatus = 'connecting';
     controllerStatusDetail = `Connecting to Receiver (${roomId})...`;
+    pushDiagLog('CLOUD-CTRL', `Connecting to online relay room "${roomId}" with PIN (${controllerPin ? controllerPin.length + ' digits' : 'empty'})...`);
     const toClientTopic = `mwb/v1/${roomId}/to_client`;
 
     controllerMqtt = mqtt.connect(CLOUD_BROKER_URL, {
@@ -667,6 +679,7 @@ function connectNativeController(opts = {}) {
         controllerMqtt.stream.socket._socket.setNoDelay(true);
       }
       controllerMqtt.subscribe(toClientTopic, { qos: 0 }, () => {
+        pushDiagLog('CLOUD-CTRL', `Subscribed to ${toClientTopic} -> Sending encrypted hello handshake`);
         const sendHello = () => {
           if (controllerStatus === 'connected' || controllerStatus === 'rejected') {
             clearInterval(controllerHelloRetryInterval);
@@ -695,6 +708,7 @@ function connectNativeController(opts = {}) {
       } catch (err) {
         controllerStatus = 'rejected';
         controllerStatusDetail = 'PIN mismatch — failed to decrypt Receiver reply';
+        pushDiagLog('CLOUD-ERR', `Failed to decrypt Receiver reply on room ${controllerRoomId} — verify PIN matches`);
         broadcastToLocalViews({
           type: 'auth_err',
           message: 'Decryption failed — verify your Pairing PIN matches the Receiver.'
@@ -709,17 +723,40 @@ function connectNativeController(opts = {}) {
     return;
   }
 
-  // LAN WebSocket Controller connection
-  const ip = (opts.hostIp || '127.0.0.1').trim();
-  const port = (opts.hostPort || '8765').trim();
+  // LAN WebSocket Controller connection — strip any ws://, wss://, http://, or (PIN: ...) before parsing IP:Port!
+  let cleanTarget = (opts.internetUrl || opts.hostIp || '127.0.0.1')
+    .trim()
+    .replace(/\(PIN:.*$/i, '')
+    .trim()
+    .replace(/^wss?:\/\//i, '')
+    .replace(/^https?:\/\//i, '')
+    .replace(/\/+$/, '')
+    .trim();
+
+  const lastColon = cleanTarget.lastIndexOf(':');
+  let ip = cleanTarget;
+  let port = (opts.hostPort || '8765').trim();
+  if (lastColon > 0) {
+    ip = cleanTarget.substring(0, lastColon).trim();
+    port = cleanTarget.substring(lastColon + 1).trim() || '8765';
+  }
+
   controllerLanUrl = `ws://${ip}:${port}`;
   controllerTransport = 'lan';
   controllerStatus = 'connecting';
-  controllerStatusDetail = `Connecting to LAN ${ip}:${port}...`;
+  controllerStatusDetail = `Connecting to Direct LAN ${controllerLanUrl}...`;
+  pushDiagLog('LAN-CTRL', `Opening Direct LAN WebSocket to ${controllerLanUrl}...`);
 
   try {
-    controllerWs = new WebSocket(controllerLanUrl, { perMessageDeflate: false });
+    controllerWs = new WebSocket(controllerLanUrl, {
+      perMessageDeflate: false,
+      handshakeTimeout: 6000
+    });
   } catch (err) {
+    controllerStatus = 'rejected';
+    controllerStatusDetail = `Invalid LAN address (${controllerLanUrl}): ${err.message}`;
+    pushDiagLog('LAN-ERR', controllerStatusDetail);
+    broadcastHostStatus();
     return;
   }
 
@@ -727,13 +764,23 @@ function connectNativeController(opts = {}) {
     if (controllerWs._socket && controllerWs._socket.setNoDelay) {
       controllerWs._socket.setNoDelay(true);
     }
-    sendFromNativeController({
-      type: 'hello',
-      clientId: myControllerId,
-      deviceName: `${os.hostname()}`,
-      transport: 'Direct LAN',
-      pin: controllerPin
-    }, true);
+    pushDiagLog('LAN-CTRL', `TCP/WebSocket connected to ${controllerLanUrl} -> Sending hello handshake`);
+    const sendLanHello = () => {
+      if (controllerStatus === 'connected' || controllerStatus === 'rejected') {
+        clearInterval(controllerHelloRetryInterval);
+        return;
+      }
+      sendFromNativeController({
+        type: 'hello',
+        clientId: myControllerId,
+        deviceName: `${os.hostname()}`,
+        transport: 'Direct LAN (Sub-1ms)',
+        pin: controllerPin
+      }, true);
+    };
+    sendLanHello();
+    clearInterval(controllerHelloRetryInterval);
+    controllerHelloRetryInterval = setInterval(sendLanHello, 2500);
     broadcastHostStatus();
   });
 
@@ -745,10 +792,25 @@ function connectNativeController(opts = {}) {
   });
 
   controllerWs.on('close', () => {
-    handleControllerDisconnect('LAN WebSocket disconnected');
+    if (controllerStatus !== 'rejected') {
+      pushDiagLog('LAN-CTRL', `LAN WebSocket closed (${controllerLanUrl})`);
+      handleControllerDisconnect(`LAN WebSocket closed (${controllerLanUrl})`);
+    }
   });
 
-  controllerWs.on('error', () => {});
+  controllerWs.on('error', (err) => {
+    const code = err.code || err.message || 'UNKNOWN';
+    controllerStatus = 'rejected';
+    if (code === 'ECONNREFUSED') {
+      controllerStatusDetail = `LAN Connection Refused (${ip}:${port}) — Ensure OneDesk is running on Receiver PC`;
+    } else if (code === 'ETIMEDOUT' || code === 'EHOSTUNREACH') {
+      controllerStatusDetail = `LAN Timeout (${ip}:${port}) — Blocked by Receiver Windows Firewall or different subnet/AP isolation`;
+    } else {
+      controllerStatusDetail = `LAN Error (${ip}:${port}): ${err.message}`;
+    }
+    pushDiagLog('LAN-ERR', controllerStatusDetail);
+    broadcastHostStatus();
+  });
 }
 
 function getInverseEdge(edge) {
@@ -780,6 +842,7 @@ function handleIncomingMessageFromReceiver(msg) {
   if (msg.type === 'auth_pending') {
     controllerStatus = 'waiting_approval';
     controllerStatusDetail = `Waiting for "${msg.hostname || 'Receiver'}" to click Accept...`;
+    pushDiagLog('CTRL', `Receiver "${msg.hostname || 'Receiver'}" received request -> Waiting for user to click ACCEPT`);
     broadcastToLocalViews(msg);
     broadcastHostStatus();
   } else if (msg.type === 'auth_ok') {
@@ -788,6 +851,7 @@ function handleIncomingMessageFromReceiver(msg) {
     controllerStatus = 'connected';
     controllerPeerHostname = msg.hostname || 'Receiver PC';
     controllerStatusDetail = `Accepted & Paired with ${controllerPeerHostname}`;
+    pushDiagLog('CTRL', `PAIRED with Receiver "${controllerPeerHostname}" (${msg.screenWidth}x${msg.screenHeight})! OS Edge armed: ${driver.hostPosition.toUpperCase()}`);
     controllerPeerScreen = {
       width: msg.screenWidth || 1920,
       height: msg.screenHeight || 1080
@@ -809,6 +873,7 @@ function handleIncomingMessageFromReceiver(msg) {
     controllerConnected = false;
     controllerStatus = 'rejected';
     controllerStatusDetail = msg.message || 'Connection declined by Receiver';
+    pushDiagLog('CTRL-ERR', `Rejected by Receiver: ${controllerStatusDetail}`);
     driver.setOsCapture(false, driver.hostPosition);
     broadcastToLocalViews(msg);
     broadcastHostStatus();
@@ -918,7 +983,8 @@ function getHostInfoPayload() {
     pairingPin: PAIR_PIN,
     publicWsUrl: publicWsUrl,
     cloudReady,
-    encryption: 'AES-256-GCM (PBKDF2-SHA256)'
+    encryption: 'AES-256-GCM (PBKDF2-SHA256)',
+    recentLogs: diagnosticLogs.slice(-18).join('\\n')
   };
 }
 
@@ -1000,11 +1066,12 @@ function handleIncomingMessage(msg, replyFn, sourceLabel, authContext) {
   if (msg.type === 'hello' || msg.type === 'auth') {
     const peerName = msg.deviceName || sourceLabel || 'Remote Controller';
     const cid = msg.clientId || ('peer_' + Date.now());
-    console.log(`[Receiver] Incoming pairing/connection request from: ${peerName} (${cid})`);
+    pushDiagLog('REC-HANDSHAKE', `Incoming handshake from "${peerName}" (${cid}) via ${msg.transport || sourceLabel}`);
 
     if (PAIR_PIN && normalizePin(msg.pin) !== normalizePin(PAIR_PIN)) {
       if (authContext) authContext.authenticated = false;
       lastConnectionEvent = { status: 'rejected', peerName, reason: 'Wrong Pairing PIN', ts: Date.now() };
+      pushDiagLog('REC-AUTH-ERR', `Rejected "${peerName}" -> Wrong PIN provided ("${msg.pin || ''}" != "${PAIR_PIN}")`);
       replyFn({ type: 'auth_err', message: 'Invalid Pairing PIN — Access Denied' });
       broadcastToClients({
         type: 'peer_connection_event',
@@ -1039,6 +1106,7 @@ function handleIncomingMessage(msg, replyFn, sourceLabel, authContext) {
       ts: Date.now()
     });
     lastConnectionEvent = { status: 'pending_approval', peerName, reason: 'Waiting for your approval...', ts: Date.now() };
+    pushDiagLog('REC-APPROVAL', `PIN verified for "${peerName}" -> Showing ACCEPT / DECLINE popup on Receiver!`);
 
     replyFn({
       type: 'auth_pending',
@@ -1373,13 +1441,25 @@ const server = http.createServer(async (req, res) => {
     const osCapture = parsedUrl.searchParams.get('osCapture') !== '0';
     const clipboard = parsedUrl.searchParams.get('clipboard') !== '0';
 
+    const cleanLan = target
+      .trim()
+      .replace(/\(PIN:.*$/i, '')
+      .trim()
+      .replace(/^wss?:\/\//i, '')
+      .replace(/^https?:\/\//i, '')
+      .replace(/\/+$/, '')
+      .trim();
+    const lastColon = cleanLan.lastIndexOf(':');
+    const parsedHostIp = lastColon > 0 ? cleanLan.substring(0, lastColon).trim() : (cleanLan || '127.0.0.1');
+    const parsedHostPort = lastColon > 0 ? (cleanLan.substring(lastColon + 1).trim() || '8765') : '8765';
+
     saveHostConfig({ clipboardSync: clipboard, hostPosition: edge });
     controllerCaptureArmed = osCapture;
     connectNativeController({
       connectionType: mode,
       internetUrl: target,
-      hostIp: target.split(':')[0] || '127.0.0.1',
-      hostPort: target.split(':')[1] || '8765',
+      hostIp: parsedHostIp,
+      hostPort: parsedHostPort,
       pin,
       hostPosition: edge,
       enableOsCapture: osCapture
@@ -1528,7 +1608,10 @@ wss.on('connection', (ws, req) => {
   ws.authenticated = isLocalhost;
   clients.add(ws);
 
-  console.log(`[Desktop Service] WebSocket connected from ${remoteIp} (LocalDashboard: ${isLocalhost})`);
+  if (!isLocalhost) {
+    pushDiagLog('LAN-REC', `Incoming Direct LAN TCP connection from ${remoteIp}`);
+    lastConnectionEvent = { status: 'connecting', peerName: `LAN (${remoteIp})`, reason: 'Connected to port 8765', ts: Date.now() };
+  }
   ws.send(JSON.stringify(getHostInfoPayload()));
 
   ws.on('message', (raw) => {
@@ -1584,6 +1667,18 @@ server.listen(PORT, '0.0.0.0', () => {
   console.log(`  Session ID -> ${publicWsUrl}`);
   console.log(`  Pairing PIN-> ${PAIR_PIN}`);
   console.log('====================================================');
+  pushDiagLog('SERVICE', `Listening on 0.0.0.0:${PORT} (LAN: ${ips.map(i => i.address).join(', ') || '127.0.0.1'})`);
+
+  // Automatically ensure Windows Firewall allows inbound Direct LAN connections on TCP port 8765
+  if (os.platform() === 'win32') {
+    spawn('powershell.exe', [
+      '-NoProfile',
+      '-WindowStyle',
+      'Hidden',
+      '-Command',
+      `netsh advfirewall firewall show rule name="OneDesk LAN Port ${PORT}" >$null 2>&1; if ($LASTEXITCODE -ne 0) { netsh advfirewall firewall add rule name="OneDesk LAN Port ${PORT}" dir=in action=allow protocol=TCP localport=${PORT} >$null 2>&1 }`
+    ], { windowsHide: true, stdio: 'ignore' });
+  }
 
   startCloudInternetRelay(false);
 });

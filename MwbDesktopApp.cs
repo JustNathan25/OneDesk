@@ -206,8 +206,10 @@ public class MwbDesktopAppForm : Form {
     private Button btnConnect;
     private Button btnDisconnect;
 
-    // Minimalist Footer Bar
+    // Minimalist Footer Bar & Live Diagnostic Log Box
     private Label lblFooterStatus;
+    private TextBox txtLiveDiagLog;
+    private string lastDiagLogSnapshot = "";
 
     private string currentRole = "receiver";
     private string currentTransportMode = "internet";
@@ -226,9 +228,9 @@ public class MwbDesktopAppForm : Form {
             baseDir = AppDomain.CurrentDomain.BaseDirectory;
         }
         this.Text = "OneDesk";
-        this.Size = new Size(560, 620);
-        this.MinimumSize = new Size(560, 620);
-        this.MaximumSize = new Size(560, 620);
+        this.Size = new Size(560, 745);
+        this.MinimumSize = new Size(560, 745);
+        this.MaximumSize = new Size(560, 745);
         this.FormBorderStyle = FormBorderStyle.FixedSingle;
         this.MaximizeBox = false;
         this.StartPosition = FormStartPosition.CenterScreen;
@@ -709,12 +711,66 @@ public class MwbDesktopAppForm : Form {
         });
         this.Controls.Add(controllerPanel);
 
-        // 6. Single-Line Minimalist Status Footer
+        // 6. Live Diagnostic Report Log Panel + Single-Line Status Footer
+        Panel diagHeaderRow = new Panel {
+            Location = new Point(24, 542),
+            Size = new Size(496, 22),
+            BackColor = BgRoot
+        };
+
+        Label lblDiagTitle = new Label {
+            Text = "LIVE CONNECTION & DIAGNOSTIC REPORT LOG",
+            Font = new Font("Consolas", 7.8f, FontStyle.Bold),
+            ForeColor = TextMuted,
+            Location = new Point(0, 4),
+            AutoSize = true
+        };
+
+        Button btnOpenFirewall = CreateFlatButton(
+            "ALLOW LAN FIREWALL",
+            new Point(356, 0),
+            new Size(140, 20),
+            BgSurface,
+            AccentEmerald,
+            BorderSubtle
+        );
+        btnOpenFirewall.Font = new Font("Consolas", 7.2f, FontStyle.Bold);
+        btnOpenFirewall.Click += (s, e) => {
+            try {
+                Process.Start(new ProcessStartInfo {
+                    FileName = "powershell.exe",
+                    Arguments = "-NoProfile -Command \"netsh advfirewall firewall add rule name='OneDesk LAN Port 8765' dir=in action=allow protocol=TCP localport=8765\"",
+                    Verb = "runas",
+                    UseShellExecute = true,
+                    WindowStyle = ProcessWindowStyle.Hidden
+                });
+                SetFooter("Added Windows Firewall rule for Direct LAN TCP port 8765!");
+            } catch (Exception ex) {
+                SetFooter("Firewall rule canceled or failed: " + ex.Message);
+            }
+        };
+
+        diagHeaderRow.Controls.AddRange(new Control[] { lblDiagTitle, btnOpenFirewall });
+        this.Controls.Add(diagHeaderRow);
+
+        txtLiveDiagLog = new TextBox {
+            Location = new Point(24, 566),
+            Size = new Size(496, 102),
+            Multiline = true,
+            ReadOnly = true,
+            ScrollBars = ScrollBars.Vertical,
+            BorderStyle = BorderStyle.FixedSingle,
+            BackColor = BgSurface,
+            ForeColor = Color.FromArgb(180, 180, 190),
+            Font = new Font("Consolas", 8f)
+        };
+        this.Controls.Add(txtLiveDiagLog);
+
         lblFooterStatus = new Label {
             Text = "AES-256-GCM END-TO-END ENCRYPTED  ·  READY",
             Font = new Font("Consolas", 8f),
             ForeColor = TextMuted,
-            Location = new Point(24, 548),
+            Location = new Point(24, 676),
             Size = new Size(496, 20),
             TextAlign = ContentAlignment.MiddleLeft
         };
@@ -1087,8 +1143,16 @@ public class MwbDesktopAppForm : Form {
                 string lastEvStatus = ExtractJsonString(json, "lastEventStatus");
                 string lastEvPeer = ExtractJsonString(json, "lastEventPeer");
                 string lastEvReason = ExtractJsonString(json, "lastEventReason");
+                string recentLogs = ExtractJsonString(json, "recentLogs").Replace("\\n", Environment.NewLine);
                 bool hooksOk = json.Contains("\"osHooksInstalled\":true");
                 bool ctrlConnected = json.Contains("\"controllerConnected\":true");
+
+                if (!string.IsNullOrEmpty(recentLogs) && recentLogs != lastDiagLogSnapshot && txtLiveDiagLog != null) {
+                    lastDiagLogSnapshot = recentLogs;
+                    txtLiveDiagLog.Text = recentLogs;
+                    txtLiveDiagLog.SelectionStart = txtLiveDiagLog.Text.Length;
+                    txtLiveDiagLog.ScrollToCaret();
+                }
 
                 if (!string.IsNullOrEmpty(pubUrl)) {
                     cachedCloudUrl = pubUrl;
