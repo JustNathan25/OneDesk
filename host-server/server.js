@@ -523,11 +523,13 @@ function broadcastToClients(obj, skipCloud = false) {
   }
 }
 
-function sendFromNativeController(payloadObj) {
-  if (!controllerConnected && payloadObj.type !== 'hello') return false;
+function sendFromNativeController(payloadObj, allowPreAuth = false) {
+  if (!controllerConnected && !allowPreAuth) return false;
+  if (payloadObj && typeof payloadObj === 'object' && !payloadObj.clientId) {
+    payloadObj.clientId = myControllerId;
+  }
   if (controllerTransport === 'cloud' && controllerMqtt && controllerMqtt.connected && controllerRoomId) {
     try {
-      // Send a plaintext discovery announcement first ONLY for 'hello' if needed, PLUS the encrypted packet
       const enc = encryptEnvelope(payloadObj, controllerRoomId, controllerPin);
       controllerMqtt.publish(`mwb/v1/${controllerRoomId}/to_host`, enc);
       if (payloadObj.type === 'hello') {
@@ -662,7 +664,7 @@ function connectNativeController(opts = {}) {
             deviceName: `${os.hostname()}`,
             transport: 'Online Relay (AES-256-GCM)',
             pin: controllerPin
-          });
+          }, true);
         };
         sendHello();
         clearInterval(controllerHelloRetryInterval);
@@ -714,7 +716,7 @@ function connectNativeController(opts = {}) {
       deviceName: `${os.hostname()}`,
       transport: 'Direct LAN',
       pin: controllerPin
-    });
+    }, true);
     broadcastHostStatus();
   });
 
@@ -1017,25 +1019,65 @@ function handleIncomingMessage(msg, replyFn, sourceLabel, authContext) {
   }
 
   // Enforce strict authentication Gate before allowing ANY input injection or layout changes
+  let hasAnyAuthenticatedCloudPeer = false;
+  for (const peer of cloudPeers.values()) {
+    if (peer.authenticated) {
+      hasAnyAuthenticatedCloudPeer = true;
+      peer.lastSeen = Date.now();
+    }
+  }
+
   const isPeerAuthenticated =
     (authContext && (authContext.authenticated || authContext.isLocalDashboard)) ||
-    (msg.clientId && cloudPeers.has(msg.clientId) && cloudPeers.get(msg.clientId).authenticated);
+    (msg.clientId && cloudPeers.has(msg.clientId) && cloudPeers.get(msg.clientId).authenticated) ||
+    (!authContext && hasAnyAuthenticatedCloudPeer);
 
   if (!isPeerAuthenticated) {
+    // If the peer is currently waiting for the user to click ACCEPT on the popup, reply with auth_pending instead of rejecting!
+    if ((msg.clientId && pendingApprovals.has(msg.clientId)) || pendingApprovals.size > 0) {
+      replyFn({
+        type: 'auth_pending',
+        hostname: os.hostname(),
+        message: 'Waiting for Receiver user to click Accept...'
+      });
+      return;
+    }
+    // Since cloud packets reaching this point were ALREADY decrypted with the valid room AES-256-GCM key + PIN,
+    // if a packet arrives before 'hello' (e.g. set_layout or clipboard_sync), queue it into pendingApprovals for user consent!
+    if (!authContext) {
+      const cid = msg.clientId || 'cloud_peer';
+      const peerName = msg.deviceName || 'Remote Controller';
+      pendingApprovals.set(cid, {
+        clientId: cid,
+        peerName,
+        transport: 'Encrypted Internet Relay',
+        replyFn,
+        authContext: null,
+        ts: Date.now()
+      });
+      lastConnectionEvent = { status: 'pending_approval', peerName, reason: 'Waiting for your approval...', ts: Date.now() };
+      replyFn({
+        type: 'auth_pending',
+        hostname: os.hostname(),
+        message: 'Waiting for Receiver user to click Accept...'
+      });
+      broadcastToClients({
+        type: 'peer_connection_event',
+        status: 'pending_approval',
+        clientId: cid,
+        peerName,
+        transport: 'Encrypted Internet Relay',
+        timestamp: Date.now()
+      });
+      broadcastHostStatus();
+      return;
+    }
+
     replyFn({
       type: 'auth_err',
       message: 'Unauthenticated input rejected. Complete PIN pairing handshake first.'
     });
     return;
-  }
-
-  if (msg.clientId && cloudPeers.has(msg.clientId)) {
-    cloudPeers.get(msg.clientId).lastSeen = Date.now();
-  } else if (cloudPeers.size === 1) {
-    // Refresh the single active authenticated cloud peer on compact mouse delta packets
-    for (const peer of cloudPeers.values()) {
-      if (peer.authenticated) peer.lastSeen = Date.now();
-    }
   }
 
   // Ultra-fast compact mouse delta packet: { t: 'm', x: dx, y: dy } or { type: 'mousemove', dx, dy }
@@ -1403,7 +1445,7 @@ wss.on('connection', (ws, req) => {
     ws._socket.setNoDelay(true);
   }
   ws.isLocalDashboard = isLocalhost;
-  ws.authenticated = isLocalhost || !PAIR_PIN;
+  ws.authenticated = isLocalhost;
   clients.add(ws);
 
   console.log(`[Desktop Service] WebSocket connected from ${remoteIp} (LocalDashboard: ${isLocalhost})`);
