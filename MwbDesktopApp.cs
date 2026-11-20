@@ -208,6 +208,8 @@ public class MwbDesktopAppForm : Form {
     private string currentRole = "receiver";
     private string currentTransportMode = "internet";
     private string currentEdge = "right";
+    private string promptedPendingClientId = "";
+    private bool approvalDialogOpen = false;
     private System.Windows.Forms.Timer pollTimer;
     private System.Windows.Forms.Timer gitCheckTimer;
     private string baseDir;
@@ -247,7 +249,7 @@ public class MwbDesktopAppForm : Form {
         BuildTrayIcon();
         EnsureBackendServiceRunning();
 
-        pollTimer = new System.Windows.Forms.Timer { Interval = 2000 };
+        pollTimer = new System.Windows.Forms.Timer { Interval = 1000 };
         pollTimer.Tick += (s, e) => RefreshServiceTelemetry();
         pollTimer.Start();
         RefreshServiceTelemetry();
@@ -759,6 +761,126 @@ public class MwbDesktopAppForm : Form {
         return json.Substring(start, end - start);
     }
 
+    private void ShowIncomingApprovalModal(string clientId, string peerName, string transport) {
+        if (approvalDialogOpen) return;
+        approvalDialogOpen = true;
+        promptedPendingClientId = clientId;
+
+        Form modal = new Form {
+            Text = "OneDesk — Incoming Connection Request",
+            Size = new Size(440, 230),
+            FormBorderStyle = FormBorderStyle.FixedDialog,
+            MaximizeBox = false,
+            MinimizeBox = false,
+            StartPosition = FormStartPosition.CenterParent,
+            TopMost = true,
+            BackColor = BgRoot,
+            ForeColor = TextPrimary,
+            Font = new Font("Segoe UI", 9f)
+        };
+
+        try {
+            int useDark = 1;
+            DwmSetWindowAttribute(modal.Handle, 20, ref useDark, sizeof(int));
+        } catch {}
+
+        Panel card = new Panel {
+            Location = new Point(16, 14),
+            Size = new Size(392, 162),
+            BackColor = BgSurface
+        };
+        card.Paint += (s, e) => {
+            using (Pen p = new Pen(AccentAmber, 1.5f)) {
+                e.Graphics.DrawRectangle(p, 0, 0, card.Width - 1, card.Height - 1);
+            }
+        };
+
+        Label lblBadge = new Label {
+            Text = "● INCOMING PAIRING REQUEST",
+            Font = new Font("Consolas", 8.5f, FontStyle.Bold),
+            ForeColor = AccentAmber,
+            Location = new Point(18, 16),
+            AutoSize = true
+        };
+
+        Label lblPeer = new Label {
+            Text = peerName + " wants to control this computer.",
+            Font = new Font("Segoe UI Semibold", 10.5f, FontStyle.Bold),
+            ForeColor = TextPrimary,
+            Location = new Point(18, 42),
+            Size = new Size(356, 24)
+        };
+
+        Label lblSub = new Label {
+            Text = "Transport: " + (string.IsNullOrEmpty(transport) ? "Online Encrypted Relay" : transport) + "\nAllow this device to share mouse, keyboard, and clipboard?",
+            Font = new Font("Segoe UI", 8.5f),
+            ForeColor = TextMuted,
+            Location = new Point(18, 68),
+            Size = new Size(356, 36)
+        };
+
+        Button btnAccept = CreateFlatButton(
+            "ACCEPT & PAIR",
+            new Point(18, 112),
+            new Size(220, 34),
+            AccentEmerald,
+            Color.FromArgb(10, 10, 12),
+            Color.Empty
+        );
+
+        Button btnDecline = CreateFlatButton(
+            "DECLINE",
+            new Point(248, 112),
+            new Size(126, 34),
+            BgInput,
+            Color.FromArgb(239, 68, 68),
+            BorderSubtle
+        );
+
+        btnAccept.Click += (s, e) => {
+            SendApprovalDecision(clientId, true, peerName);
+            modal.Close();
+        };
+
+        btnDecline.Click += (s, e) => {
+            SendApprovalDecision(clientId, false, peerName);
+            modal.Close();
+        };
+
+        modal.FormClosed += (s, e) => {
+            approvalDialogOpen = false;
+        };
+
+        card.Controls.AddRange(new Control[] { lblBadge, lblPeer, lblSub, btnAccept, btnDecline });
+        modal.Controls.Add(card);
+
+        if (this.WindowState == FormWindowState.Minimized || !this.Visible) {
+            this.Show();
+            this.WindowState = FormWindowState.Normal;
+        }
+        this.Activate();
+        modal.Show(this);
+    }
+
+    private void SendApprovalDecision(string clientId, bool accept, string peerName) {
+        try {
+            string url = string.Format(
+                "http://127.0.0.1:8765/approve-peer?clientId={0}&accept={1}",
+                Uri.EscapeDataString(clientId),
+                accept ? "1" : "0"
+            );
+            using (var wc = new System.Net.WebClient()) {
+                wc.DownloadString(url);
+            }
+            SetFooter(accept
+                ? ("ACCEPTED CONNECTION FROM " + peerName)
+                : ("DECLINED CONNECTION FROM " + peerName));
+            RefreshServiceTelemetry();
+        } catch (Exception ex) {
+            SetFooter("Approval error: " + ex.Message);
+        }
+    }
+
     private void RefreshServiceTelemetry() {
         try {
             using (var wc = new System.Net.WebClient()) {
@@ -768,6 +890,15 @@ public class MwbDesktopAppForm : Form {
                 string lanUrl = ExtractJsonString(json, "lanWsUrl");
                 string activeScreen = ExtractJsonString(json, "activeScreen");
                 string peerHost = ExtractJsonString(json, "controllerPeerHostname");
+                string ctrlStatus = ExtractJsonString(json, "controllerStatus");
+                string ctrlDetail = ExtractJsonString(json, "controllerStatusDetail");
+                string activeRecPeer = ExtractJsonString(json, "activeReceiverPeer");
+                string pendingId = ExtractJsonString(json, "pendingClientId");
+                string pendingName = ExtractJsonString(json, "pendingPeerName");
+                string pendingTransport = ExtractJsonString(json, "pendingTransport");
+                string lastEvStatus = ExtractJsonString(json, "lastEventStatus");
+                string lastEvPeer = ExtractJsonString(json, "lastEventPeer");
+                string lastEvReason = ExtractJsonString(json, "lastEventReason");
                 bool hooksOk = json.Contains("\"osHooksInstalled\":true");
                 bool ctrlConnected = json.Contains("\"controllerConnected\":true");
 
@@ -781,11 +912,60 @@ public class MwbDesktopAppForm : Form {
                     lblLanHint.Text = "LAN DIRECT  ·  " + lanUrl;
                 }
 
-                lblStatusDot.ForeColor = hooksOk ? AccentEmerald : AccentAmber;
-                if (ctrlConnected && !string.IsNullOrEmpty(peerHost)) {
-                    lblStatusText.Text = "LINKED TO " + peerHost.ToUpper();
+                // Trigger interactive Accept/Decline popup on Receiver when a new connection request arrives
+                if (!string.IsNullOrEmpty(pendingId) && pendingId != promptedPendingClientId && !approvalDialogOpen) {
+                    SetFooter("INCOMING REQUEST FROM " + pendingName + " — WAITING FOR YOUR APPROVAL");
+                    ShowIncomingApprovalModal(pendingId, pendingName, pendingTransport);
+                } else if (string.IsNullOrEmpty(pendingId)) {
+                    promptedPendingClientId = "";
+                }
+
+                // Update live status header and footer for both Controller and Receiver modes
+                if (currentRole == "controller") {
+                    if (ctrlStatus == "waiting_approval") {
+                        lblStatusDot.ForeColor = AccentAmber;
+                        lblStatusText.Text = "WAITING FOR RECEIVER APPROVAL...";
+                        btnConnect.Text = "WAITING FOR APPROVAL...";
+                        SetFooter(ctrlDetail);
+                    } else if (ctrlStatus == "connecting") {
+                        lblStatusDot.ForeColor = AccentAmber;
+                        lblStatusText.Text = "CONNECTING TO RECEIVER...";
+                        SetFooter(ctrlDetail);
+                    } else if (ctrlStatus == "connected" && ctrlConnected) {
+                        lblStatusDot.ForeColor = AccentEmerald;
+                        lblStatusText.Text = "PAIRED · " + peerHost.ToUpper();
+                        btnConnect.Text = "ARMED · " + currentEdge.ToUpper() + " SEAM";
+                        SetFooter("PAIRED WITH " + peerHost + " · MOVE CURSOR TO " + currentEdge.ToUpper() + " SCREEN EDGE");
+                    } else if (ctrlStatus == "rejected") {
+                        lblStatusDot.ForeColor = Color.FromArgb(239, 68, 68);
+                        lblStatusText.Text = "CONNECTION REJECTED";
+                        btnConnect.Text = "LINK & ARM EDGE";
+                        SetFooter(ctrlDetail);
+                    } else {
+                        lblStatusDot.ForeColor = hooksOk ? AccentEmerald : AccentAmber;
+                        lblStatusText.Text = hooksOk ? "OS HOOKS READY" : "STARTING DRIVER";
+                    }
                 } else {
-                    lblStatusText.Text = hooksOk ? "OS HOOKS READY" : "STARTING DRIVER";
+                    // Receiver Mode live status
+                    if (!string.IsNullOrEmpty(pendingId)) {
+                        lblStatusDot.ForeColor = AccentAmber;
+                        lblStatusText.Text = "APPROVAL PENDING · " + pendingName.ToUpper();
+                    } else if (!string.IsNullOrEmpty(activeRecPeer)) {
+                        lblStatusDot.ForeColor = AccentEmerald;
+                        lblStatusText.Text = "CONNECTED · " + activeRecPeer.ToUpper();
+                        SetFooter("RECEIVING LIVE ENCRYPTED INPUT FROM " + activeRecPeer);
+                    } else if (lastEvStatus == "connecting") {
+                        lblStatusDot.ForeColor = AccentAmber;
+                        lblStatusText.Text = "INCOMING · " + lastEvPeer.ToUpper();
+                        SetFooter("INCOMING CONNECTION ATTEMPT FROM " + lastEvPeer + "...");
+                    } else if (lastEvStatus == "rejected") {
+                        lblStatusDot.ForeColor = Color.FromArgb(239, 68, 68);
+                        lblStatusText.Text = "REJECTED · " + lastEvPeer.ToUpper();
+                        SetFooter("REJECTED " + lastEvPeer + " (" + lastEvReason + ")");
+                    } else {
+                        lblStatusDot.ForeColor = hooksOk ? AccentEmerald : AccentAmber;
+                        lblStatusText.Text = hooksOk ? "RECEIVER READY" : "STARTING DRIVER";
+                    }
                 }
 
                 if (monitorCanvas.ActiveScreen != activeScreen && !string.IsNullOrEmpty(activeScreen)) {

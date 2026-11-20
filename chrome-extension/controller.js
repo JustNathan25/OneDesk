@@ -498,6 +498,17 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (!msg || typeof msg !== 'object') return;
 
     if (msg.type === 'peer_connection_event') {
+      if (msg.status === 'pending_approval') {
+        updatePeerTelemetryCard(
+          'connecting',
+          `⏳ Incoming Request: ${msg.peerName}`,
+          `Accept or Decline connection from ${msg.peerName}`
+        );
+        logEvent(`🔔 Connection approval requested by ${msg.peerName}`);
+        const ok = window.confirm(`OneDesk Pairing Request:\n\n"${msg.peerName}" wants to connect and control this computer via ${msg.transport || 'Online Relay'}.\n\nClick OK to ACCEPT or Cancel to DECLINE.`);
+        fetch(`http://127.0.0.1:8765/approve-peer?clientId=${encodeURIComponent(msg.clientId || '')}&accept=${ok ? '1' : '0'}`).catch(() => {});
+        return;
+      }
       if (msg.status === 'connecting') {
         updatePeerTelemetryCard(
           'connecting',
@@ -530,6 +541,17 @@ document.addEventListener('DOMContentLoaded', async () => {
         );
         logEvent(`⚪ ${msg.peerName} disconnected — fail-safe input reset complete`);
       }
+      return;
+    }
+
+    if (msg.type === 'auth_pending') {
+      wsDot.className = 'status-dot connecting';
+      wsStatus.textContent = 'Waiting Approval...';
+      updatePeerTelemetryCard(
+        'connecting',
+        `⏳ Waiting for "${msg.hostname || 'Receiver'}"...`,
+        'Please click ACCEPT on the Receiver PC popup'
+      );
       return;
     }
 

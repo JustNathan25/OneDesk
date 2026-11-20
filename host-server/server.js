@@ -54,9 +54,23 @@ let hostConfig = getOrCreateHostConfig(false);
 let publicWsUrl = hostConfig.publicWsUrl;
 let PAIR_PIN = process.env.PIN || hostConfig.pairingPin || '';
 
-// Derive AES-256-GCM key from roomId + pairingPin for authenticated E2EE over public internet relay
+// Derive AES-256-GCM key from normalized roomId + pairingPin for authenticated E2EE over public internet relay
+function normalizeRoomId(roomId) {
+  return String(roomId || '')
+    .trim()
+    .toLowerCase()
+    .replace(/^mwb:\/\//, '')
+    .replace(/\/+$/, '');
+}
+
+function normalizePin(pin) {
+  return String(pin || '').trim();
+}
+
 function deriveSessionKey(roomId, pin) {
-  return crypto.pbkdf2Sync(String(pin || '000000'), `mwb-v2-salt:${roomId}`, 10000, 32, 'sha256');
+  const normRoom = normalizeRoomId(roomId);
+  const normPin = normalizePin(pin) || '000000';
+  return crypto.pbkdf2Sync(normPin, `mwb-v2-salt:${normRoom}`, 10000, 32, 'sha256');
 }
 
 function encryptEnvelope(payloadObj, roomId, pin) {
@@ -78,10 +92,6 @@ function decryptEnvelope(rawBufferOrStr, roomId, pin) {
   const str = rawBufferOrStr.toString();
   const parsed = JSON.parse(str);
   if (!parsed || !parsed._mwb_enc) {
-    // Reject unencrypted messages if a PIN is configured
-    if (pin) {
-      throw new Error('Unencrypted packet rejected (E2EE required)');
-    }
     return parsed;
   }
   const key = deriveSessionKey(roomId, pin);
@@ -97,6 +107,8 @@ function decryptEnvelope(rawBufferOrStr, roomId, pin) {
 let cloudClient = null;
 let cloudReady = false;
 const cloudPeers = new Map();
+const pendingApprovals = new Map(); // clientId -> { clientId, peerName, transport, replyFn, authContext, ts }
+let lastConnectionEvent = { status: 'idle', peerName: '', reason: '', ts: 0 };
 
 // Native Controller Outbound Transport State (when this desktop app acts as Controller)
 let controllerTransport = 'none'; // 'cloud' | 'lan' | 'none'
@@ -106,12 +118,15 @@ let controllerLanUrl = '';
 let controllerWs = null;
 let controllerMqtt = null;
 let controllerConnected = false;
+let controllerStatus = 'idle'; // 'idle' | 'connecting' | 'waiting_approval' | 'connected' | 'rejected'
+let controllerStatusDetail = 'Ready to pair';
 let controllerPeerHostname = '';
 let controllerPeerScreen = { width: 1920, height: 1080 };
 let controllerLatencyMs = null;
 let controllerSensitivity = 1.4;
 let controllerCaptureArmed = false;
 let controllerPingInterval = null;
+let controllerHelloRetryInterval = null;
 const myControllerId = 'mwb_native_' + crypto.randomBytes(3).toString('hex');
 
 function getLocalIPs() {
@@ -509,11 +524,20 @@ function broadcastToClients(obj, skipCloud = false) {
 }
 
 function sendFromNativeController(payloadObj) {
-  if (!controllerConnected) return false;
+  if (!controllerConnected && payloadObj.type !== 'hello') return false;
   if (controllerTransport === 'cloud' && controllerMqtt && controllerMqtt.connected && controllerRoomId) {
     try {
+      // Send a plaintext discovery announcement first ONLY for 'hello' if needed, PLUS the encrypted packet
       const enc = encryptEnvelope(payloadObj, controllerRoomId, controllerPin);
       controllerMqtt.publish(`mwb/v1/${controllerRoomId}/to_host`, enc);
+      if (payloadObj.type === 'hello') {
+        controllerMqtt.publish(`mwb/v1/${controllerRoomId}/to_host`, JSON.stringify({
+          type: 'connection_attempt_announce',
+          clientId: payloadObj.clientId,
+          deviceName: payloadObj.deviceName,
+          transport: payloadObj.transport
+        }));
+      }
       return true;
     } catch {
       return false;
@@ -599,29 +623,25 @@ function connectNativeController(opts = {}) {
 
   if (mode === 'internet') {
     let raw = (opts.internetUrl || '').trim();
-    // Automatically strip "(PIN: 123456)" or trailing comments if user pasted the combined Copy Link + PIN string
     const inlinePinMatch = raw.match(/\(PIN:\s*([0-9A-Za-z]+)\)/i);
     if (inlinePinMatch && !controllerPin) {
       controllerPin = inlinePinMatch[1].trim();
     }
     raw = raw.replace(/\(PIN:.*$/i, '').trim().split(/\s+/)[0] || '';
-    const roomId = raw
-      .replace(/^mwb:\/\//i, '')
-      .replace(/^wss?:\/\//i, '')
-      .replace(/^https?:\/\//i, '')
-      .replace(/\.loca\.lt.*$/i, '')
-      .replace(/\/+$/, '')
-      .trim();
+    const roomId = normalizeRoomId(
+      raw
+        .replace(/^mwb:\/\//i, '')
+        .replace(/^wss?:\/\//i, '')
+        .replace(/^https?:\/\//i, '')
+        .replace(/\.loca\.lt.*$/i, '')
+        .replace(/\/+$/, '')
+    );
     if (!roomId) return;
-
-    // Prevent self-loopback warning if testing Controller -> Receiver on the exact same PC
-    if (roomId === hostConfig.roomId) {
-      console.log(`[Notice] Controller is connecting to this PC's own Session ID (${roomId}). For 2 PCs, paste the 2nd PC's Session Link.`);
-    }
 
     controllerTransport = 'cloud';
     controllerRoomId = roomId;
-    const toHostTopic = `mwb/v1/${roomId}/to_host`;
+    controllerStatus = 'connecting';
+    controllerStatusDetail = `Connecting to Receiver (${roomId})...`;
     const toClientTopic = `mwb/v1/${roomId}/to_client`;
 
     controllerMqtt = mqtt.connect(CLOUD_BROKER_URL, {
@@ -630,24 +650,25 @@ function connectNativeController(opts = {}) {
     });
 
     controllerMqtt.on('connect', () => {
-      controllerMqtt.subscribe(toClientTopic, { qos: 0 });
-      controllerConnected = true;
-      sendFromNativeController({
-        type: 'hello',
-        clientId: myControllerId,
-        deviceName: `${os.hostname()} (Native Desktop Controller)`,
-        transport: 'Encrypted Internet Relay (AES-256-GCM)',
-        pin: controllerPin
+      controllerMqtt.subscribe(toClientTopic, { qos: 0 }, () => {
+        const sendHello = () => {
+          if (controllerStatus === 'connected' || controllerStatus === 'rejected') {
+            clearInterval(controllerHelloRetryInterval);
+            return;
+          }
+          sendFromNativeController({
+            type: 'hello',
+            clientId: myControllerId,
+            deviceName: `${os.hostname()}`,
+            transport: 'Online Relay (AES-256-GCM)',
+            pin: controllerPin
+          });
+        };
+        sendHello();
+        clearInterval(controllerHelloRetryInterval);
+        controllerHelloRetryInterval = setInterval(sendHello, 3000);
+        broadcastHostStatus();
       });
-      sendFromNativeController({ type: 'set_layout', hostPosition });
-
-      clearInterval(controllerPingInterval);
-      controllerPingInterval = setInterval(() => {
-        if (controllerConnected) {
-          sendFromNativeController({ type: 'ping', clientId: myControllerId, ts: Date.now() });
-        }
-      }, 2500);
-      broadcastHostStatus();
     });
 
     controllerMqtt.on('message', (topic, payloadBuf) => {
@@ -656,10 +677,13 @@ function connectNativeController(opts = {}) {
         const msg = decryptEnvelope(payloadBuf, controllerRoomId, controllerPin);
         handleIncomingMessageFromReceiver(msg);
       } catch (err) {
+        controllerStatus = 'rejected';
+        controllerStatusDetail = 'PIN mismatch — failed to decrypt Receiver reply';
         broadcastToLocalViews({
           type: 'auth_err',
           message: 'Decryption failed — verify your Pairing PIN matches the Receiver.'
         });
+        broadcastHostStatus();
       }
     });
 
@@ -674,6 +698,8 @@ function connectNativeController(opts = {}) {
   const port = (opts.hostPort || '8765').trim();
   controllerLanUrl = `ws://${ip}:${port}`;
   controllerTransport = 'lan';
+  controllerStatus = 'connecting';
+  controllerStatusDetail = `Connecting to LAN ${ip}:${port}...`;
 
   try {
     controllerWs = new WebSocket(controllerLanUrl);
@@ -682,22 +708,13 @@ function connectNativeController(opts = {}) {
   }
 
   controllerWs.on('open', () => {
-    controllerConnected = true;
     sendFromNativeController({
       type: 'hello',
       clientId: myControllerId,
-      deviceName: `${os.hostname()} (Native Desktop Controller)`,
-      transport: 'LAN WebSocket',
+      deviceName: `${os.hostname()}`,
+      transport: 'Direct LAN',
       pin: controllerPin
     });
-    sendFromNativeController({ type: 'set_layout', hostPosition });
-
-    clearInterval(controllerPingInterval);
-    controllerPingInterval = setInterval(() => {
-      if (controllerConnected) {
-        sendFromNativeController({ type: 'ping', clientId: myControllerId, ts: Date.now() });
-      }
-    }, 2500);
     broadcastHostStatus();
   });
 
@@ -718,19 +735,38 @@ function connectNativeController(opts = {}) {
 function handleIncomingMessageFromReceiver(msg) {
   if (!msg || typeof msg !== 'object') return;
 
-  if (msg.type === 'auth_ok') {
+  if (msg.type === 'auth_pending') {
+    controllerStatus = 'waiting_approval';
+    controllerStatusDetail = `Waiting for "${msg.hostname || 'Receiver'}" to click Accept...`;
+    broadcastToLocalViews(msg);
+    broadcastHostStatus();
+  } else if (msg.type === 'auth_ok') {
+    clearInterval(controllerHelloRetryInterval);
+    controllerConnected = true;
+    controllerStatus = 'connected';
     controllerPeerHostname = msg.hostname || 'Receiver PC';
+    controllerStatusDetail = `Accepted & Paired with ${controllerPeerHostname}`;
     controllerPeerScreen = {
       width: msg.screenWidth || 1920,
       height: msg.screenHeight || 1080
     };
+    sendFromNativeController({ type: 'set_layout', hostPosition: driver.hostPosition });
     if (controllerCaptureArmed) {
       driver.setOsCapture(true, driver.hostPosition);
     }
+    clearInterval(controllerPingInterval);
+    controllerPingInterval = setInterval(() => {
+      if (controllerConnected) {
+        sendFromNativeController({ type: 'ping', clientId: myControllerId, ts: Date.now() });
+      }
+    }, 2500);
     broadcastToLocalViews(msg);
     broadcastHostStatus();
   } else if (msg.type === 'auth_err') {
+    clearInterval(controllerHelloRetryInterval);
     controllerConnected = false;
+    controllerStatus = 'rejected';
+    controllerStatusDetail = msg.message || 'Connection declined by Receiver';
     driver.setOsCapture(false, driver.hostPosition);
     broadcastToLocalViews(msg);
     broadcastHostStatus();
@@ -753,7 +789,10 @@ function handleIncomingMessageFromReceiver(msg) {
 function handleControllerDisconnect(reason) {
   const wasConnected = controllerConnected;
   controllerConnected = false;
+  controllerStatus = 'idle';
+  controllerStatusDetail = reason || 'Disconnected';
   clearInterval(controllerPingInterval);
+  clearInterval(controllerHelloRetryInterval);
   // Fail-safe: unclip local cursor and stop OS hook capture immediately
   driver.releaseControllerCapture(0.5, 0.5);
   if (wasConnected) {
@@ -769,12 +808,15 @@ function handleControllerDisconnect(reason) {
 
 function disconnectNativeController(disableArmed = true) {
   clearInterval(controllerPingInterval);
+  clearInterval(controllerHelloRetryInterval);
   if (disableArmed) {
     controllerCaptureArmed = false;
     driver.setOsCapture(false, driver.hostPosition);
   }
   driver.releaseControllerCapture(0.5, 0.5);
   controllerConnected = false;
+  controllerStatus = 'idle';
+  controllerStatusDetail = 'Ready to pair';
   if (controllerWs) {
     try {
       controllerWs.removeAllListeners();
@@ -793,6 +835,14 @@ function disconnectNativeController(disableArmed = true) {
 function getHostInfoPayload() {
   const ips = getLocalIPs();
   const lanWsUrl = ips.length > 0 ? `ws://${ips[0].address}:${PORT}` : `ws://127.0.0.1:${PORT}`;
+  const firstPending = pendingApprovals.size > 0 ? Array.from(pendingApprovals.values())[0] : null;
+  let activeReceiverPeer = '';
+  for (const p of cloudPeers.values()) {
+    if (p.authenticated) {
+      activeReceiverPeer = p.peerName;
+      break;
+    }
+  }
   return {
     type: 'host_info',
     hostname: os.hostname(),
@@ -806,9 +856,18 @@ function getHostInfoPayload() {
     osCaptureEnabled: driver.osCaptureEnabled,
     controllerCaptureArmed,
     controllerConnected,
+    controllerStatus,
+    controllerStatusDetail,
     controllerPeerHostname,
     controllerPeerScreen,
     controllerLatencyMs,
+    activeReceiverPeer,
+    pendingClientId: firstPending ? firstPending.clientId : '',
+    pendingPeerName: firstPending ? firstPending.peerName : '',
+    pendingTransport: firstPending ? firstPending.transport : '',
+    lastEventStatus: lastConnectionEvent.status,
+    lastEventPeer: lastConnectionEvent.peerName,
+    lastEventReason: lastConnectionEvent.reason,
     clipboardSync: hostConfig.clipboardSync !== false,
     connectedClients: Array.from(clients).filter((c) => !c.isLocalDashboard && c.authenticated).length + cloudPeers.size,
     lanWsUrl,
@@ -882,21 +941,28 @@ function handleIncomingMessage(msg, replyFn, sourceLabel, authContext) {
     }
   }
 
-  // Authentication Handshake
-  if (msg.type === 'hello' || msg.type === 'auth') {
-    const peerName = msg.deviceName || sourceLabel || 'Remote Controller';
-    console.log(`[Receiver] Incoming pairing/connection request from: ${peerName}`);
-
-    broadcastToClients({
+  // Plaintext connection attempt notice (so Receiver shows a live status alert even before decrypting)
+  if (msg.type === 'connection_attempt_announce') {
+    const peerName = msg.deviceName || 'Remote Controller';
+    lastConnectionEvent = { status: 'connecting', peerName, reason: 'Handshaking...', ts: Date.now() };
+    broadcastToLocalViews({
       type: 'peer_connection_event',
       status: 'connecting',
       peerName,
-      transport: msg.transport || sourceLabel,
-      timestamp: Date.now()
+      transport: msg.transport || sourceLabel
     });
+    return;
+  }
 
-    if (PAIR_PIN && String(msg.pin || '') !== String(PAIR_PIN)) {
+  // Authentication & Interactive Approval Handshake
+  if (msg.type === 'hello' || msg.type === 'auth') {
+    const peerName = msg.deviceName || sourceLabel || 'Remote Controller';
+    const cid = msg.clientId || ('peer_' + Date.now());
+    console.log(`[Receiver] Incoming pairing/connection request from: ${peerName} (${cid})`);
+
+    if (PAIR_PIN && normalizePin(msg.pin) !== normalizePin(PAIR_PIN)) {
       if (authContext) authContext.authenticated = false;
+      lastConnectionEvent = { status: 'rejected', peerName, reason: 'Wrong Pairing PIN', ts: Date.now() };
       replyFn({ type: 'auth_err', message: 'Invalid Pairing PIN — Access Denied' });
       broadcastToClients({
         type: 'peer_connection_event',
@@ -908,31 +974,45 @@ function handleIncomingMessage(msg, replyFn, sourceLabel, authContext) {
       return;
     }
 
-    if (authContext) authContext.authenticated = true;
-    if (msg.clientId) {
-      cloudPeers.set(msg.clientId, {
-        lastSeen: Date.now(),
-        peerName,
-        authenticated: true
+    // If this clientId was already approved in the current session, immediately confirm auth_ok
+    if (cloudPeers.has(cid) && cloudPeers.get(cid).authenticated) {
+      cloudPeers.get(cid).lastSeen = Date.now();
+      if (authContext) authContext.authenticated = true;
+      replyFn({
+        type: 'auth_ok',
+        hostname: os.hostname(),
+        screenWidth: driver.screenWidth,
+        screenHeight: driver.screenHeight
       });
+      return;
     }
 
-    replyFn({
-      type: 'auth_ok',
-      hostname: os.hostname(),
-      screenWidth: driver.screenWidth,
-      screenHeight: driver.screenHeight
+    // Hold connection in pendingApprovals and trigger Accept / Decline popup on Receiver PC!
+    pendingApprovals.set(cid, {
+      clientId: cid,
+      peerName,
+      transport: msg.transport || sourceLabel,
+      replyFn,
+      authContext,
+      ts: Date.now()
     });
-    replyFn(getHostInfoPayload());
+    lastConnectionEvent = { status: 'pending_approval', peerName, reason: 'Waiting for your approval...', ts: Date.now() };
+
+    replyFn({
+      type: 'auth_pending',
+      hostname: os.hostname(),
+      message: 'Waiting for Receiver user to click Accept...'
+    });
 
     broadcastToClients({
       type: 'peer_connection_event',
-      status: 'connected',
+      status: 'pending_approval',
+      clientId: cid,
       peerName,
       transport: msg.transport || sourceLabel,
-      connectedClients: cloudPeers.size,
       timestamp: Date.now()
     });
+    broadcastHostStatus();
     return;
   }
 
@@ -1105,13 +1185,36 @@ function startCloudInternetRelay(forceNew = false) {
       msg = decryptEnvelope(messageBuffer, hostConfig.roomId, PAIR_PIN);
     } catch (err) {
       console.log(`[Security] Rejected undecryptable or wrong-PIN packet on room ${hostConfig.roomId}`);
+      lastConnectionEvent = {
+        status: 'rejected',
+        peerName: lastConnectionEvent.peerName || 'Remote Internet Device',
+        reason: 'Wrong Pairing PIN (Decryption Failed)',
+        ts: Date.now()
+      };
       broadcastToLocalViews({
         type: 'peer_connection_event',
         status: 'rejected',
-        peerName: 'Remote Internet Device',
-        reason: 'AES-256-GCM Decryption / Pairing PIN mismatch'
+        peerName: lastConnectionEvent.peerName,
+        reason: 'Wrong Pairing PIN (AES-256-GCM Decryption Failed)'
       });
+      // Also notify the controller that authentication failed so its UI updates immediately
+      if (cloudClient && cloudReady) {
+        try {
+          cloudClient.publish(outTopic, JSON.stringify({
+            type: 'auth_err',
+            message: 'Invalid Pairing PIN — Receiver could not decrypt your request.'
+          }));
+        } catch {}
+      }
       return;
+    }
+
+    // If unencrypted packet arrived when PIN is set, only allow 'connection_attempt_announce'
+    if (PAIR_PIN && msg.type !== 'connection_attempt_announce') {
+      const rawParsed = JSON.parse(messageBuffer.toString());
+      if (!rawParsed._mwb_enc) {
+        return;
+      }
     }
 
     handleIncomingMessage(
@@ -1204,6 +1307,59 @@ const server = http.createServer(async (req, res) => {
 
   if (parsedUrl.pathname === '/native-disconnect') {
     disconnectNativeController(true);
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(getHostInfoPayload()));
+    return;
+  }
+
+  if (parsedUrl.pathname === '/approve-peer') {
+    const cid = parsedUrl.searchParams.get('clientId') || '';
+    const accept = parsedUrl.searchParams.get('accept') === '1';
+    const pending = pendingApprovals.get(cid);
+    if (pending) {
+      pendingApprovals.delete(cid);
+      if (accept) {
+        if (pending.authContext) pending.authContext.authenticated = true;
+        cloudPeers.set(cid, {
+          lastSeen: Date.now(),
+          peerName: pending.peerName,
+          authenticated: true
+        });
+        lastConnectionEvent = { status: 'connected', peerName: pending.peerName, reason: 'Approved by user', ts: Date.now() };
+        pending.replyFn({
+          type: 'auth_ok',
+          hostname: os.hostname(),
+          screenWidth: driver.screenWidth,
+          screenHeight: driver.screenHeight
+        });
+        pending.replyFn(getHostInfoPayload());
+        broadcastToClients({
+          type: 'peer_connection_event',
+          status: 'connected',
+          peerName: pending.peerName,
+          transport: pending.transport,
+          connectedClients: cloudPeers.size,
+          timestamp: Date.now()
+        });
+        console.log(`[Receiver] User ACCEPTED connection from ${pending.peerName} (${cid})`);
+      } else {
+        if (pending.authContext) pending.authContext.authenticated = false;
+        lastConnectionEvent = { status: 'rejected', peerName: pending.peerName, reason: 'Declined by Receiver user', ts: Date.now() };
+        pending.replyFn({
+          type: 'auth_err',
+          message: `Connection declined by user on "${os.hostname()}".`
+        });
+        broadcastToClients({
+          type: 'peer_connection_event',
+          status: 'rejected',
+          peerName: pending.peerName,
+          reason: 'Declined by user',
+          timestamp: Date.now()
+        });
+        console.log(`[Receiver] User DECLINED connection from ${pending.peerName} (${cid})`);
+      }
+      broadcastHostStatus();
+    }
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(getHostInfoPayload()));
     return;
